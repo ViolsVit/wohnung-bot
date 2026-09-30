@@ -186,7 +186,7 @@ def first_amount(rx, text, min_value=50):
 
 
 def location_ok(postcode: str) -> bool:
-    if not postcode:
+    if not postcode or postcode in getattr(config, "EXCLUDED_POSTCODES", ()):
         return False
     if re.fullmatch(r"1[0-2]\d0", postcode) and 1010 <= int(postcode) <= 1230:
         return True
