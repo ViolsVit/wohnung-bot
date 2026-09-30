@@ -1,0 +1,296 @@
+"""
+Логіка фільтрації: з полів і тексту оголошення визначає, чи підходить квартира.
+Результат: status = "ok" | "check" (підходить, але є ⚠️) | "reject".
+"""
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+import config
+
+
+@dataclass
+class Listing:
+    source: str                 # willhaben | immoscout | derstandard | wohnnet
+    id: str
+    url: str
+    title: str = ""
+    postcode: str = ""
+    location: str = ""
+    address: str = ""
+    # --- гроші (€/міс.)
+    rent_net: Optional[float] = None     # Miete без USt і без комуналки
+    rent_vat: Optional[float] = None     # USt на Miete, якщо сайт її показує
+    rent_gross: Optional[float] = None   # Miete з USt (якщо сайт дає одразу)
+    bk: Optional[float] = None           # Betriebskosten / комуналка (з USt)
+    total_rent: Optional[float] = None   # загальна сума на місяць (усе разом)
+    deposit: Optional[float] = None
+    # --- квартира
+    area: Optional[float] = None
+    rooms: Optional[float] = None
+    year: Optional[int] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    image: str = ""
+    text: str = ""              # увесь текст оголошення (опис + характеристики)
+    features: list = field(default_factory=list)   # явні ознаки з полів (Garage, Terrasse …)
+    # --- контакт
+    contact_name: str = ""
+    contact_company: str = ""
+    contact_phone: str = ""
+    contact_email: str = ""
+
+
+@dataclass
+class Verdict:
+    status: str                  # ok | check | reject
+    reasons: list = field(default_factory=list)   # чому відсіяно
+    warnings: list = field(default_factory=list)  # що перевірити вручну
+    pluses: list = field(default_factory=list)    # ⭐ бонуси
+    info: dict = field(default_factory=dict)
+    dream: bool = False          # 💚 оренда ≤ TARGET_RENT
+
+
+# ---------- допоміжні ----------
+
+def eur(v) -> str:
+    return f"{v:,.0f} €".replace(",", " ")
+
+
+def parse_num(s) -> Optional[float]:
+    """'4.690,31' -> 4690.31 ; '789,74' -> 789.74 ; '988.0' -> 988.0 ; '3.000' -> 3000 ; '37 227,50' -> 37227.5"""
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        return float(s)
+    s = str(s).replace("€", "").replace("EUR", "").replace("\xa0", "").replace(" ", "").replace(" ", "")
+    s = s.strip().rstrip(",.-")
+    if not s:
+        return None
+    if "." in s and "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", s):
+        s = s.replace(".", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def rent_with_tax(l: Listing):
+    """Повертає (оренда з USt без комуналки, чи_оцінено)."""
+    if l.rent_gross:
+        return l.rent_gross, False
+    if l.rent_net:
+        if l.rent_vat is not None:
+            return round(l.rent_net + l.rent_vat, 2), False
+        return round(l.rent_net * (1 + config.VAT_RATE), 2), True
+    return None, False
+
+
+NUM = r"(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)"
+
+RX = {
+    "wohnticket": re.compile(r"wohn\s*-?\s*ticket|vormerkschein", re.I),
+    "exclude": re.compile(
+        r"wohnungstausch|tauschwohnung|\btausch\b|wg-zimmer|zimmer in (einer )?wg|untermiete|"
+        r"kurzzeitmiete|ferienwohnung|studentenheim|studentenapartment|nur für student|"
+        r"seniorenwohnung|betreutes wohnen|anlegerwohnung", re.I),
+    "ensuite": re.compile(
+        r"en[\s-]?suite|schlafzimmer mit (eigenem |integriertem |angrenzendem )?(bad|dusche|badezimmer)|"
+        r"(bad|dusche|badezimmer) im schlafzimmer|offene[sr]? (bad|dusche)|bad direkt vom schlafzimmer", re.I),
+    "dishwasher": re.compile(r"geschirrsp[üu]l(?!er?-?anschlu|maschinenanschlu)|sp[üu]lmaschine(?!nanschlu)|dishwasher", re.I),
+    "dishwasher_conn": re.compile(r"(geschirrsp[üu]l\w*|sp[üu]lmaschinen?)-?anschlu", re.I),
+    "no_dishwasher": re.compile(r"(ohne|kein(en)?)\s+(geschirrsp[üu]l|sp[üu]lmaschine)", re.I),
+    "garage": re.compile(r"tiefgarage|garage|carport", re.I),
+    "parking": re.compile(r"stellpl[aä]tz|parkpl[aä]tz|parking", re.I),
+    "terrace": re.compile(r"terrasse|terrace", re.I),
+    "altbau": re.compile(r"\baltbau|stilaltbau|gründerzeit|jahrhundertwende|OLD_BUILDING", re.I),
+    "neubau": re.compile(r"\bneubau|erstbezug|neu errichtet|NEW_BUILDING", re.I),
+    "year": re.compile(r"(?:baujahr|errichtet|erbaut|fertiggestellt)\s*(?:im\s+jahr(?:e)?\s*|:|\s)\s*(1[89]\d\d|20\d\d)", re.I),
+    "deposit_months": re.compile(
+        r"kaution\s*[:\-]?\s*(?:von\s*|in\s*höhe\s*von\s*)?(\d+(?:[.,]\d+)?)\s*"
+        r"(?:brutto|netto|gesamt)?\s*-?\s*(?:monats?-?(?:mieten|miete|gesamtmieten|bruttomieten)|bmm?\b)", re.I),
+    "deposit_months2": re.compile(r"(\d+)\s*(?:brutto)?monats?mieten?\s*(?:als\s*)?kaution", re.I),
+    "deposit_eur": re.compile(r"kaution\s*[:\-]?\s*(?:von\s*|in\s*höhe\s*von\s*|ca\.\s*)?(?:€|eur(?:o)?)?\s*" + NUM + r"\s*(?:€|eur|euro|,-)?", re.I),
+    "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
+    "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
+    "abloese_any": re.compile(r"abl[öo]se", re.I),
+    "finanz": re.compile(r"(?:finanzierungsbeitrag|eigenmittel(?:anteil)?|baukostenbeitrag|grundkostenbeitrag)[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
+}
+
+
+def first_amount(rx, text, min_value=50):
+    for m in rx.finditer(text):
+        v = parse_num(m.group(m.lastindex))
+        if v is not None and v >= min_value:
+            return v
+    return None
+
+
+def location_ok(postcode: str) -> bool:
+    if not postcode:
+        return False
+    if re.fullmatch(r"1[0-2]\d0", postcode) and 1010 <= int(postcode) <= 1230:
+        return True
+    return postcode in config.NOE_POSTCODES
+
+
+def fingerprint(l: Listing) -> str:
+    """Відбиток для пошуку дублікатів між сайтами: індекс + площа + ціна."""
+    price = l.total_rent or l.rent_gross or l.rent_net or 0
+    return f"{l.postcode}|{round(l.area or 0)}|{round(price / 25)}"
+
+
+def quick_reject(l: Listing) -> list:
+    """Відсів за даними зі списку результатів (без завантаження сторінки оголошення)."""
+    r = []
+    if not location_ok(l.postcode):
+        r.append("локація")
+    if l.rooms is not None and int(round(l.rooms)) not in config.ROOMS:
+        r.append("кімнати")
+    if l.area is not None and l.area < config.MIN_AREA:
+        r.append("площа")
+    if l.total_rent is not None and l.total_rent > config.MAX_TOTAL_HARD:
+        r.append("ціна")
+    head = f"{l.title} {l.contact_company}"
+    if RX["wohnticket"].search(head) or RX["exclude"].search(head):
+        r.append("заголовок")
+    return r
+
+
+# ---------- головна функція ----------
+
+def evaluate(l: Listing) -> Verdict:
+    v = Verdict(status="ok")
+    t = l.text or ""
+
+    # --- локація
+    if not location_ok(l.postcode):
+        v.reasons.append(f"локація {l.postcode or '?'} поза зоною")
+
+    # --- кімнати / площа
+    if l.rooms is not None and int(round(l.rooms)) not in config.ROOMS:
+        v.reasons.append(f"{l.rooms:g} кімнат")
+    if l.area is not None and l.area < config.MIN_AREA:
+        v.reasons.append(f"площа {l.area:g} м²")
+    if l.area is None:
+        v.warnings.append("площа не вказана")
+
+    # --- ціна: оренда з USt, без комуналки
+    rent, estimated = rent_with_tax(l)
+    v.info["rent"], v.info["rent_estimated"] = rent, estimated
+    if rent is not None:
+        if rent > config.MAX_RENT:
+            if estimated and l.rent_net <= config.MAX_RENT:
+                v.warnings.append(f"USt не вказана окремо: з податком ≈ {eur(rent)}")
+            else:
+                v.reasons.append(f"оренда {eur(rent)}")
+        if rent <= config.TARGET_RENT:
+            v.dream = True
+    elif l.total_rent is not None:
+        if l.total_rent <= config.MAX_RENT:
+            if l.total_rent <= config.TARGET_RENT:
+                v.dream = True
+        elif l.total_rent > config.MAX_TOTAL_HARD:
+            v.reasons.append(f"загалом {eur(l.total_rent)}")
+        else:
+            v.warnings.append("оренда без комуналки не вказана окремо")
+    else:
+        v.warnings.append("ціна не вказана")
+
+    # --- виключення за змістом
+    if RX["wohnticket"].search(t):
+        v.reasons.append("потрібен Wohnticket")
+    m = RX["exclude"].search(t + " " + l.contact_company)
+    if m:
+        v.reasons.append(f"не підходить: «{m.group(0)}»")
+    m = RX["ensuite"].search(t)
+    if m:
+        v.reasons.append(f"санвузол у спальні: «{m.group(0)}»")
+
+    # --- рік будівлі
+    year = l.year
+    if year is None:
+        m = RX["year"].search(t)
+        if m:
+            year = int(m.group(1))
+    if year is not None and not (1800 <= year <= 2035):
+        year = None
+    v.info["year"] = year
+    if year is not None:
+        if year < config.MIN_YEAR:
+            v.reasons.append(f"будинок {year} р.")
+    elif RX["altbau"].search(t) and not RX["neubau"].search(t):
+        v.reasons.append("Altbau")
+    elif RX["neubau"].search(t):
+        v.info["year"] = "новобудова"
+    else:
+        v.warnings.append("рік будинку не вказаний")
+
+    # --- застава
+    base = l.total_rent or ((rent or 0) + (l.bk or 0)) or None
+    deposit = l.deposit
+    if deposit is not None and deposit < 20:          # «3» = 3 місячні оренди
+        deposit = deposit * base if base else None
+    if deposit is None:
+        m = RX["deposit_months"].search(t) or RX["deposit_months2"].search(t)
+        if m:
+            months = parse_num(m.group(1))
+            if months and base:
+                deposit = months * base
+    if deposit is None:
+        deposit = first_amount(RX["deposit_eur"], t, min_value=100)
+    v.info["deposit"] = deposit
+    if deposit is not None:
+        if deposit > config.MAX_DEPOSIT:
+            v.reasons.append(f"застава {eur(deposit)}")
+    else:
+        v.warnings.append("застава не вказана")
+
+    # --- Ablöse
+    if RX["abloese_free"].search(t):
+        abloese = 0.0
+    else:
+        abloese = first_amount(RX["abloese_eur"], t, min_value=100)
+        if abloese is None and RX["abloese_any"].search(t):
+            v.warnings.append("згадується Ablöse — уточнити суму")
+    v.info["abloese"] = abloese
+    if abloese and abloese > config.MAX_ABLOESE:
+        v.reasons.append(f"Ablöse {eur(abloese)}")
+
+    # --- Genossenschaft: фінансовий внесок
+    fin = first_amount(RX["finanz"], t, min_value=500)
+    if fin is not None:
+        v.info["finanz"] = fin
+        if fin > config.MAX_DEPOSIT:
+            v.reasons.append(f"внесок у Genossenschaft {eur(fin)}")
+        else:
+            v.warnings.append(f"внесок у Genossenschaft {eur(fin)}")
+
+    # --- посудомийка
+    if RX["no_dishwasher"].search(t):
+        v.reasons.append("без посудомийки")
+    elif RX["dishwasher"].search(t):
+        v.pluses.append("🍽 посудомийка")
+    elif RX["dishwasher_conn"].search(t):
+        v.warnings.append("є лише підключення для посудомийки")
+    else:
+        v.warnings.append("посудомийка не згадана")
+
+    # --- бонуси
+    feats = " ".join(l.features)
+    if RX["garage"].search(feats) or RX["garage"].search(t):
+        v.pluses.append("🚗 гараж")
+    elif RX["parking"].search(feats) or RX["parking"].search(t):
+        v.pluses.append("🅿️ паркомісце")
+    if RX["terrace"].search(feats) or RX["terrace"].search(t):
+        v.pluses.append("🌿 тераса")
+
+    if v.reasons:
+        v.status = "reject"
+    elif v.warnings:
+        v.status = "check"
+    return v
