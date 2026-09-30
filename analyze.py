@@ -100,6 +100,9 @@ def rent_with_tax(l: Listing):
     return None, False
 
 
+MONTHS = (r"(?:j[aä]nner|januar|feber|februar|m[aä]rz|april|mai|juni|juli|august|september|oktober|"
+          r"november|dezember)")
+
 NUM = r"(\d{1,3}(?:[.\s]\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)"
 
 RX = {
@@ -131,6 +134,17 @@ RX = {
     "energy_incl": re.compile(
         r"warmmiete|(?:inkl|inklusive|einschließlich)\.?\s*(?:der\s+)?(?:heiz|heizung|warmwasser)|"
         r"heiz(?:ung|kosten)[^.\n]{0,40}?(?:inkludiert|inkl\.|inbegriffen|enthalten)", re.I),
+    "available": re.compile(
+        r"(?:verfügbar(?:keit)?|beziehbar(?:keit)?|bezugsfertig|bezugsfrei|frei|bezug(?:stermin)?|übergabe|"
+        r"mietbeginn|einzug(?:stermin)?|available\w*)(?:\s*(?:ab|per|mit|zum|ist|:|-))*\s*"
+        r"(ab\s+sofort|sofort|nach\s+(?:vereinbarung|absprache)|\d{4}-\d{2}-\d{2}|"
+        r"\d{1,2}\.\s?\d{1,2}\.\s?(?:\d{4}|\d{2})?|"
+        r"(?:anfang|mitte|ende)?\s*(?:\d{1,2}\.\s*)?" + MONTHS + r"(?:\s+\d{4})?)", re.I),
+    "available_rev": re.compile(r"\b(sofort)\s+(?:beziehbar|bezugsfertig|verfügbar|frei|zu beziehen)", re.I),
+    "email": re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}", re.I),
+    "phone": re.compile(
+        r"\b(?:tel(?:efon|\.)?|mobil|handy|phone|t)\s*[.:]?\s*((?:\+|00)?\d[\d\s/()-]{7,18}\d)|"
+        r"((?:\+43|0043)[\s/()-]*\d[\d\s/()-]{6,16}\d|\b06\d{2}[\s/-]*\d[\d\s/-]{5,12}\d)", re.I),
     "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
     "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
     "abloese_any": re.compile(r"abl[öo]se", re.I),
@@ -151,6 +165,16 @@ def quote_around(text: str, m, width: int = 110) -> str:
     if len(q) > width:
         q = q[:width].rsplit(" ", 1)[0] + " …"
     return pre + q
+
+
+def norm_available(s: str) -> str:
+    s = " ".join(s.split()).strip(" .,")
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        return f"{m.group(3)}.{m.group(2)}.{m.group(1)}"
+    if re.fullmatch(r"(ab\s+)?sofort", s, re.I):
+        return "ab sofort"
+    return s
 
 
 def first_amount(rx, text, min_value=50):
@@ -201,6 +225,23 @@ def evaluate(l: Listing) -> Verdict:
     # --- локація
     if not location_ok(l.postcode):
         v.reasons.append(f"локація {l.postcode or '?'} поза зоною")
+
+    # --- дата заселення (як написано в оголошенні)
+    m = RX["available"].search(t) or RX["available_rev"].search(t)
+    v.info["available"] = norm_available(m.group(1)) if m else None
+
+    # --- контакти з тексту, якщо сайт не дав їх окремими полями
+    if not l.contact_email:
+        m = RX["email"].search(t)
+        if m and not re.search(r"noreply|no-reply|example", m.group(0), re.I):
+            l.contact_email = m.group(0)
+    if not l.contact_phone:
+        for m in RX["phone"].finditer(t):
+            raw = m.group(1) or m.group(2)
+            digits = re.sub(r"\D", "", raw)
+            if 9 <= len(digits) <= 15:
+                l.contact_phone = raw.strip()
+                break
 
     # --- кімнати / площа
     if l.rooms is not None and int(round(l.rooms)) not in config.ROOMS:

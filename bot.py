@@ -59,6 +59,10 @@ def tg_send(text: str, preview_url: str = ""):
         time.sleep(1.1)   # ліміт Telegram ~1 повідомлення/сек у чат
 
 
+def norm_phone_display(p: str) -> str:
+    return S.norm_phone(p) if re.fullmatch(r"[\d\s/()+-]+", p or "") else p
+
+
 def eur(v):
     return f"{v:,.0f} €".replace(",", " ") if v is not None else "?"
 
@@ -127,6 +131,10 @@ def format_message(l: Listing, v) -> str:
     year = v.info.get("year")
     out.append("🏗 " + ("Neubau" if year == "новобудова" else f"Baujahr {year}" if year else "Baujahr ?"))
 
+    # --- дата заселення
+    avail = v.info.get("available")
+    out.append("📅 Verfügbar: " + (f"<b>{e(avail)}</b>" if avail else "не вказано"))
+
     # --- 7. бонуси
     if v.pluses:
         out.append("⭐ " + " · ".join(v.pluses))
@@ -140,7 +148,7 @@ def format_message(l: Listing, v) -> str:
     out += ["", "👤 <b>Контакт</b>"]
     out.append(e(who) if who else "<i>ім'я не вказане</i>")
     if l.contact_phone:
-        out.append(f"📞 {e(l.contact_phone)}")
+        out.append(f"📞 {e(norm_phone_display(l.contact_phone))}")
     if l.contact_email:
         out.append(f"✉️ {e(l.contact_email)}")
     if not (l.contact_phone or l.contact_email):
@@ -171,7 +179,7 @@ def load_state():
 
 def save_state(state):
     now = time.time()
-    keep = 60 * 86400
+    keep = 180 * 86400        # пам'ятаємо пів року
     state["seen"] = {k: v for k, v in state["seen"].items() if now - v.get("t", now) < keep}
     state["fp"] = {k: v for k, v in state["fp"].items() if now - v.get("t", now) < keep}
     STATE_FILE.parent.mkdir(exist_ok=True)
@@ -232,7 +240,7 @@ def main():
             continue
         fp = fingerprint(l)
         dup = state["fp"].get(fp)
-        if dup and not dup["k"].startswith(l.source + ":"):
+        if dup and dup["k"] != key:           # те саме житло: інший сайт або перевиставлене з новим id
             print(f"  дубль {key} = {dup['k']}")
             state["seen"][key] = {"t": time.time(), "s": "d"}
             continue
@@ -251,7 +259,8 @@ def main():
         checked += 1
         v = evaluate(l)
         state["seen"][key] = {"t": time.time(), "s": v.status[0]}
-        state["fp"][fingerprint(l)] = {"t": time.time(), "k": key}
+        for f in {fp, fingerprint(l)}:       # відбиток і зі списку, і з деталей
+            state["fp"][f] = {"t": time.time(), "k": key}
         print(f"  {v.status:6} {key} {l.title[:60]} {v.reasons or v.warnings}")
         if v.status != "reject" or SEND_REJECTED:
             ready.append((l, v))

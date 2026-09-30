@@ -321,6 +321,11 @@ def _ds_apply(l: Listing, e: dict):
         l.bk = round(sum(others) * (1 + config.VAT_RATE), 2)
     if "DEPOSIT" in c:
         l.deposit = c["DEPOSIT"].get("net") or c["DEPOSIT"].get("gross")
+    for k, val in prop.items():             # дата заселення, якщо DER STANDARD її дає
+        if "availab" in k.lower() and val:
+            val = val.get("date") or val.get("value") or val.get("text") if isinstance(val, dict) else val
+            if isinstance(val, (str, int)):
+                l.text = (l.text + f"\nVerfügbar ab: {val}").strip()
     free = [d.get("text") for d in c.values() if d.get("text")]
     if free:
         l.text = (l.text + "\n" + "\n".join(free)).strip()
