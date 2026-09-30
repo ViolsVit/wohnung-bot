@@ -73,7 +73,7 @@ def format_message(l: Listing, v) -> str:
                  "reject": "❌ <b>Відсіяно</b>"}[v.status])
     out = [" · ".join(head), f"<b>{e(l.title.strip()[:160])}</b>", ""]
 
-    # --- де
+    # --- 1. локація: вулиця + номер (якщо сайт дає), індекс, місто/район
     if l.postcode in config.NOE_POSTCODES:
         place = f"{l.postcode} {config.NOE_POSTCODES[l.postcode]}"
     elif l.location and l.postcode and l.postcode in l.location:
@@ -82,36 +82,52 @@ def format_message(l: Listing, v) -> str:
         place = f"{l.postcode} {l.location}".strip()
     else:
         place = f"{l.postcode} Wien" if l.postcode.startswith("1") else l.postcode
-    addr = f" · {e(l.address)}" if l.address and l.address not in place else ""
-    out.append(f"📍 <b>{e(place)}</b>{addr}")
+    addr = (l.address or "").strip(" ,")
+    if addr and l.postcode and l.postcode in addr:
+        full = addr                                   # сайт уже дав повну адресу
+    elif addr and addr.lower() not in place.lower():
+        full = f"{addr}, {place}"
+    else:
+        full = place
+    out.append(f"📍 <b>{e(full)}</b>")
 
-    # --- гроші
+    # --- 2. щомісячна сума (Miete + Betriebskosten, з USt)
     rent, est = v.info.get("rent"), v.info.get("rent_estimated")
-    if rent:
-        out.append(f"💶 Оренда з податком: <b>{eur(rent)}</b>" + (" <i>(≈, USt оцінено)</i>" if est else ""))
-        extra = []
-        if l.bk:
-            extra.append(f"комуналка {eur(l.bk)}")
-        if l.total_rent:
-            extra.append(f"разом {eur(l.total_rent)}")
-        if extra:
-            out.append("      + " + " = ".join(extra) if len(extra) == 2 else "      " + extra[0])
+    monthly = v.info.get("monthly")
+    approx = " ≈" if est else ""
+    if rent and l.bk:
+        detail = f"Miete {eur(rent)}{approx} + Betriebskosten {eur(l.bk)}, inkl. USt"
+    elif l.total_rent and rent:
+        detail = f"Gesamtmiete; davon Miete {eur(rent)}{approx}, Betriebskosten nicht separat angegeben"
     elif l.total_rent:
-        out.append(f"💶 Разом (з комуналкою): <b>{eur(l.total_rent)}</b>")
+        detail = "Gesamtmiete, Aufteilung nicht angegeben"
+    elif rent:
+        detail = f"nur Miete{approx}, Betriebskosten nicht angegeben"
+    else:
+        detail = ""
+    out.append(f"💶 Щомісяця: <b>{eur(monthly)}</b>" + (f" — {e(detail)}" if detail else ""))
+    energy, quote = v.info.get("energy"), v.info.get("energy_quote")
+    if energy == "extra":
+        out.append(f"      🔥 Heizung/Warmwasser/Strom <b>extra</b>: <i>«{e(quote)}»</i>")
+    elif energy == "incl":
+        out.append(f"      🔥 Heizung inkludiert: <i>«{e(quote)}»</i>")
+    else:
+        out.append("      🔥 Heizung/Strom: im Inserat nicht erwähnt")
 
-    # --- квартира
-    flat = []
-    if l.area:
-        flat.append(f"{l.area:g} м²")
-    if l.rooms:
-        flat.append(f"{l.rooms:g} кімн.")
-    year = v.info.get("year")
-    flat.append(f"🏗 {year}" if year else "🏗 рік ?")
-    out.append("📐 " + " · ".join(flat))
+    # --- 3. застава, 4. Ablöse
+    out.append(f"🔐 Kaution: {eur(v.info.get('deposit'))}")
     abl = v.info.get("abloese")
-    out.append(f"🔐 Застава: {eur(v.info.get('deposit'))} · 🛋 Ablöse: "
-               + ("немає" if abl == 0 else eur(abl) if abl else "—"))
+    out.append("🛋 Ablöse: " + ("keine" if abl == 0 else eur(abl) if abl else "—"))
 
+    # --- 5. площа, 6. будинок
+    size = [f"{l.area:g} м²"] if l.area else ["площа ?"]
+    if l.rooms:
+        size.append(f"{l.rooms:g} Zimmer")
+    out.append("📐 " + " · ".join(size))
+    year = v.info.get("year")
+    out.append("🏗 " + ("Neubau" if year == "новобудова" else f"Baujahr {year}" if year else "Baujahr ?"))
+
+    # --- 7. бонуси
     if v.pluses:
         out.append("⭐ " + " · ".join(v.pluses))
     if v.warnings:
@@ -131,7 +147,7 @@ def format_message(l: Listing, v) -> str:
         out.append("<i>телефон/пошта — через форму на сайті</i>")
 
     # --- посилання
-    origin = f"{l.lat},{l.lon}" if l.lat and l.lon else quote_plus(f"{l.address} {place}".strip())
+    origin = f"{l.lat},{l.lon}" if l.lat and l.lon else quote_plus(full)
     maps = ("https://www.google.com/maps/dir/?api=1&travelmode=transit"
             f"&origin={origin}&destination={quote_plus(config.TRANSIT_DESTINATION)}")
     out += ["", f'🔗 <a href="{e(l.url)}"><b>Відкрити оголошення ({S.SOURCE_NAMES[l.source]})</b></a>',
@@ -243,7 +259,7 @@ def main():
 
     # 💚 спершу, потім ✅, потім ⚠️; всередині — дешевші вище
     order = {"ok": 0, "check": 1, "reject": 2}
-    ready.sort(key=lambda x: (not x[1].dream, order[x[1].status], rent_with_tax(x[0])[0] or x[0].total_rent or 9999))
+    ready.sort(key=lambda x: (not x[1].dream, order[x[1].status], x[1].info.get("monthly") or 9999))
     for l, v in ready:
         tg_send(format_message(l, v), l.image or l.url)
 

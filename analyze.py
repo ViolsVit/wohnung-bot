@@ -22,7 +22,7 @@ class Listing:
     rent_net: Optional[float] = None     # Miete без USt і без комуналки
     rent_vat: Optional[float] = None     # USt на Miete, якщо сайт її показує
     rent_gross: Optional[float] = None   # Miete з USt (якщо сайт дає одразу)
-    bk: Optional[float] = None           # Betriebskosten / комуналка (з USt)
+    bk: Optional[float] = None           # Betriebskosten — обслуговування будинку (з USt), без опалення/світла
     total_rent: Optional[float] = None   # загальна сума на місяць (усе разом)
     deposit: Optional[float] = None
     # --- квартира
@@ -79,6 +79,16 @@ def parse_num(s) -> Optional[float]:
         return None
 
 
+def monthly_cost(l: Listing) -> Optional[float]:
+    """Сума для ліміту: Miete з USt + Betriebskosten (без опалення/світла)."""
+    rent, _ = rent_with_tax(l)
+    if rent is not None and l.bk:
+        return round(rent + l.bk, 2)
+    if l.total_rent:
+        return max(l.total_rent, rent or 0)
+    return rent
+
+
 def rent_with_tax(l: Listing):
     """Повертає (оренда з USt без комуналки, чи_оцінено)."""
     if l.rent_gross:
@@ -115,11 +125,32 @@ RX = {
         r"(?:brutto|netto|gesamt)?\s*-?\s*(?:monats?-?(?:mieten|miete|gesamtmieten|bruttomieten)|bmm?\b)", re.I),
     "deposit_months2": re.compile(r"(\d+)\s*(?:brutto)?monats?mieten?\s*(?:als\s*)?kaution", re.I),
     "deposit_eur": re.compile(r"kaution\s*[:\-]?\s*(?:von\s*|in\s*höhe\s*von\s*|ca\.\s*)?(?:€|eur(?:o)?)?\s*" + NUM + r"\s*(?:€|eur|euro|,-)?", re.I),
+    "energy_extra": re.compile(
+        r"kaltmiete|(?:heiz|strom|energie|warmwasser)\w*[^.\n]{0,80}?nicht\s+(?:inkludiert|inbegriffen|enthalten|inkl)|"
+        r"(?:zzgl|zuzüglich|exkl|exklusive)\.?\s*(?:der\s+)?(?:heiz|strom|energie|warmwasser)", re.I),
+    "energy_incl": re.compile(
+        r"warmmiete|(?:inkl|inklusive|einschließlich)\.?\s*(?:der\s+)?(?:heiz|heizung|warmwasser)|"
+        r"heiz(?:ung|kosten)[^.\n]{0,40}?(?:inkludiert|inkl\.|inbegriffen|enthalten)", re.I),
     "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
     "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
     "abloese_any": re.compile(r"abl[öo]se", re.I),
     "finanz": re.compile(r"(?:finanzierungsbeitrag|eigenmittel(?:anteil)?|baukostenbeitrag|grundkostenbeitrag)[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
 }
+
+
+def quote_around(text: str, m, width: int = 110) -> str:
+    """Коротка цитата з оголошення навколо знахідки (у межах речення)."""
+    start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
+    ends = [i for i in (text.find(".", m.end()), text.find("\n", m.end())) if i != -1]
+    end = min(ends) if ends else len(text)
+    pre = ""
+    if end - start > width and m.start() - start > 25:     # довге речення — починаємо ближче до знахідки
+        start = text.rfind(" ", start, m.start() - 20) + 1
+        pre = "… "
+    q = " ".join(text[start:end].split())
+    if len(q) > width:
+        q = q[:width].rsplit(" ", 1)[0] + " …"
+    return pre + q
 
 
 def first_amount(rx, text, min_value=50):
@@ -140,7 +171,7 @@ def location_ok(postcode: str) -> bool:
 
 def fingerprint(l: Listing) -> str:
     """Відбиток для пошуку дублікатів між сайтами: індекс + площа + ціна."""
-    price = l.total_rent or l.rent_gross or l.rent_net or 0
+    price = monthly_cost(l) or 0
     return f"{l.postcode}|{round(l.area or 0)}|{round(price / 25)}"
 
 
@@ -179,27 +210,32 @@ def evaluate(l: Listing) -> Verdict:
     if l.area is None:
         v.warnings.append("площа не вказана")
 
-    # --- ціна: оренда з USt, без комуналки
+    # --- ціна: Miete (з USt) + Betriebskosten, БЕЗ Heizung / Warmwasser / Strom
     rent, estimated = rent_with_tax(l)
     v.info["rent"], v.info["rent_estimated"] = rent, estimated
-    if rent is not None:
-        if rent > config.MAX_RENT:
-            if estimated and l.rent_net <= config.MAX_RENT:
-                v.warnings.append(f"USt не вказана окремо: з податком ≈ {eur(rent)}")
+    monthly = monthly_cost(l)
+    v.info["monthly"] = monthly
+    if monthly is not None:
+        if monthly > config.MAX_RENT:
+            net_basis = (l.rent_net or 0) + (l.bk or 0)
+            if estimated and net_basis <= config.MAX_RENT:
+                v.warnings.append(f"USt не вказана окремо: з податком ≈ {eur(monthly)}")
             else:
-                v.reasons.append(f"оренда {eur(rent)}")
-        if rent <= config.TARGET_RENT:
+                v.reasons.append(f"Miete + Betriebskosten {eur(monthly)}")
+        elif monthly <= config.TARGET_RENT:
             v.dream = True
-    elif l.total_rent is not None:
-        if l.total_rent <= config.MAX_RENT:
-            if l.total_rent <= config.TARGET_RENT:
-                v.dream = True
-        elif l.total_rent > config.MAX_TOTAL_HARD:
-            v.reasons.append(f"загалом {eur(l.total_rent)}")
-        else:
-            v.warnings.append("оренда без комуналки не вказана окремо")
+        if rent is not None and not l.bk and not l.total_rent:
+            v.warnings.append("Betriebskosten не вказані — сума буде вищою")
     else:
         v.warnings.append("ціна не вказана")
+
+    # --- опалення / гаряча вода / світло (Betriebskosten їх зазвичай НЕ містять)
+    v.info["energy"], v.info["energy_quote"] = None, ""
+    for kind in ("extra", "incl"):
+        m = RX["energy_" + kind].search(t)
+        if m:
+            v.info["energy"], v.info["energy_quote"] = kind, quote_around(t, m)
+            break
 
     # --- виключення за змістом
     if RX["wohnticket"].search(t):

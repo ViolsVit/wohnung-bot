@@ -408,6 +408,7 @@ def wohnnet_search(region: str, pages: int) -> list:
                 source="wohnnet", id=a["data-id"], url=WN_BASE + a["href"],
                 title=a.get("data-title") or a.get("title") or "",
                 postcode=pc.group(1) if pc else "",
+                address=addr.get_text(" ", strip=True) if addr else "",
                 area=parse_num(area.group(1)) if area else None,
                 rooms=parse_num(rooms.group(1)) if rooms else None,
                 total_rent=parse_num(price.group(1)) if price else None,
@@ -440,6 +441,9 @@ def wohnnet_details(l: Listing) -> Listing:
         l.rent_vat = round(l.rent_net * config.VAT_RATE, 2)
     if bk:
         l.bk = round(bk * (1 + config.VAT_RATE), 2) if mwst else bk
+    street = value_after(lines, "Adresse", "Anschrift")
+    if street and re.search(r"\d{4}|straße|gasse|weg|platz|allee|ring", street, re.I):
+        l.address = street
     dep = parse_num(value_after(lines, "Kaution") or "")
     dep_info = parse_num(value_after(lines, "Kaution Info") or "")
     l.deposit = dep or (dep_info if dep_info and dep_info < 20 else None)
