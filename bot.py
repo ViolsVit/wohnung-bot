@@ -25,7 +25,7 @@ import requests
 
 import config
 import sources as S
-from analyze import Listing, evaluate, fingerprint, quick_reject, rent_with_tax
+from analyze import Listing, evaluate, fingerprint, quick_reject, rent_with_tax, total_gap
 
 STATE_FILE = Path(__file__).parent / "state" / "seen.json"
 DRY_RUN = os.getenv("DRY_RUN") == "1"
@@ -40,7 +40,16 @@ def polite_pause():
 # Telegram
 # =====================================================================
 
-def tg_send(text: str, preview_url: str = ""):
+def listing_buttons(l: Listing) -> dict:
+    """Кнопки під оголошенням. «Запит на перегляд» обробляє Cloudflare Worker (папка cloudflare/)."""
+    row = []
+    if getattr(config, "REQUEST_BUTTON", True):
+        row.append({"text": "✉️ Запит на перегляд", "callback_data": "req"})
+    row.append({"text": "🔗 Оголошення", "url": l.url})
+    return {"inline_keyboard": [row]}
+
+
+def tg_send(text: str, preview_url: str = "", buttons: dict = None):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chats = [c.strip() for c in (os.getenv("TELEGRAM_CHAT_ID") or "").split(",") if c.strip()]
     if DRY_RUN or not token or not chats:
@@ -48,6 +57,8 @@ def tg_send(text: str, preview_url: str = ""):
         return
     for chat in chats:
         payload = {"chat_id": chat, "text": text, "parse_mode": "HTML"}
+        if buttons:
+            payload["reply_markup"] = buttons
         if preview_url:
             payload["link_preview_options"] = {"url": preview_url, "prefer_large_media": True,
                                                "show_above_text": True}
@@ -61,6 +72,33 @@ def tg_send(text: str, preview_url: str = ""):
 
 def norm_phone_display(p: str) -> str:
     return S.norm_phone(p) if re.fullmatch(r"[\d\s/()+-]+", p or "") else p
+
+
+def extra_lines(l: Listing, v, gap: float) -> list:
+    e = html.escape
+    lines, known = [], 0.0
+    energy, quote = v.info.get("energy"), v.info.get("energy_quote")
+    if l.heating:
+        lines.append(f"• 🔥 Heizkosten {eur(l.heating)}")
+    for name, amount, q in v.info.get("extras") or []:
+        if name == "Heizkosten" and l.heating:
+            continue
+        if amount:
+            known += amount
+        if q == quote:
+            quote = ""                  # та сама цитата — не дублюємо нижче
+        lines.append(f"• {e(name)} {eur(amount) if amount else '(сума не вказана)'}: <i>«{e(q)}»</i>")
+    rest = gap - known                  # gap уже без окремо вказаних Heizkosten
+    if rest > 2:
+        lines.append(f"• у Gesamtmiete ({eur(l.total_rent)}) ще +{eur(rest)} не розписано "
+                     "(Heizung / Garage / Möbel …)")
+    if energy == "extra" and quote:
+        lines.append(f"• 🔥 Heizung/Warmwasser/Strom extra: <i>«{e(quote)}»</i>")
+    elif energy == "incl":
+        lines.append(f"• 🔥 Heizung inkludiert: <i>«{e(quote)}»</i>")
+    elif not l.heating and energy is None:
+        lines.append("• 🔥 Heizung/Strom: im Inserat nicht erwähnt — найчастіше окремо")
+    return lines
 
 
 def eur(v):
@@ -99,24 +137,25 @@ def format_message(l: Listing, v) -> str:
     rent, est = v.info.get("rent"), v.info.get("rent_estimated")
     monthly = v.info.get("monthly")
     approx = " ≈" if est else ""
+    gap = total_gap(l)
+    note = ""
     if rent and l.bk:
-        detail = f"Miete {eur(rent)}{approx} + Betriebskosten {eur(l.bk)}, inkl. USt"
+        shown_rent = monthly - l.bk if gap < -2 else rent      # без USt — показуємо Miete з суми сайту
+        detail = f"Miete {eur(shown_rent)}{approx if gap >= -2 else ''} + Betriebskosten {eur(l.bk)}"
+        detail += ", inkl. USt" if gap >= -2 else ""
+        if gap < -2:
+            note = f"Gesamtmiete laut Inserat {eur(l.total_rent)} — схоже, без USt (приватний власник)"
     elif l.total_rent and rent:
-        detail = f"Gesamtmiete; davon Miete {eur(rent)}{approx}, Betriebskosten nicht separat angegeben"
+        detail = f"Gesamtmiete; davon Miete {eur(min(rent, monthly))}, Betriebskosten nicht separat angegeben"
     elif l.total_rent:
-        detail = "Gesamtmiete, Aufteilung nicht angegeben"
+        detail = "Gesamtmiete, Aufteilung nicht angegeben — може містити Heizung"
     elif rent:
         detail = f"nur Miete{approx}, Betriebskosten nicht angegeben"
     else:
         detail = ""
     out.append(f"💶 Щомісяця: <b>{eur(monthly)}</b>" + (f" — {e(detail)}" if detail else ""))
-    energy, quote = v.info.get("energy"), v.info.get("energy_quote")
-    if energy == "extra":
-        out.append(f"      🔥 Heizung/Warmwasser/Strom <b>extra</b>: <i>«{e(quote)}»</i>")
-    elif energy == "incl":
-        out.append(f"      🔥 Heizung inkludiert: <i>«{e(quote)}»</i>")
-    else:
-        out.append("      🔥 Heizung/Strom: im Inserat nicht erwähnt")
+    if note:
+        out.append(f"      ℹ️ {e(note)}")
 
     # --- 3. застава, 4. Ablöse
     out.append(f"🔐 Kaution: {eur(v.info.get('deposit'))}")
@@ -138,6 +177,9 @@ def format_message(l: Listing, v) -> str:
     # --- 7. бонуси
     if v.pluses:
         out.append("⭐ " + " · ".join(v.pluses))
+
+    # --- додаткові витрати: не в ліміті, лише для уточнення
+    out += ["", "➕ <b>Додатково, не в ліміті:</b>"] + extra_lines(l, v, total_gap(l))
     if v.warnings:
         out += ["", "⚠️ <b>Уточнити:</b>"] + [f"• {e(w)}" for w in v.warnings]
     if v.reasons:
@@ -270,7 +312,7 @@ def main():
     order = {"ok": 0, "check": 1, "reject": 2}
     ready.sort(key=lambda x: (not x[1].dream, order[x[1].status], x[1].info.get("monthly") or 9999))
     for l, v in ready:
-        tg_send(format_message(l, v), l.image or l.url)
+        tg_send(format_message(l, v), l.image or l.url, listing_buttons(l) if v.status != "reject" else None)
 
     save_state(state)
     print(f"Готово ({mode}): перевірено {checked}, надіслано {len(ready)}. "
