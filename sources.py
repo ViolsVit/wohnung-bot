@@ -327,6 +327,9 @@ def _ds_apply(l: Listing, e: dict):
         l.heating = h.get("gross") or (round(h["net"] * 1.2, 2) if h.get("net") else None)
     if "DEPOSIT" in c:
         l.deposit = c["DEPOSIT"].get("net") or c["DEPOSIT"].get("gross")
+    for k, val in prop.items():             # тип опалення, якщо DER STANDARD його дає
+        if any(x in k.lower() for x in ("heat", "energy")) and isinstance(val, str):
+            l.text = (l.text + f"\nHeizung: {val}").strip()
     for k, val in prop.items():             # дата заселення, якщо DER STANDARD її дає
         if "availab" in k.lower() and val:
             val = val.get("date") or val.get("value") or val.get("text") if isinstance(val, dict) else val

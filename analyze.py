@@ -167,6 +167,13 @@ RX = {
         r"\b(?:tel(?:efon|\.)?|mobil|handy|phone|t)\s*[.:]?\s*((?:\+|00)?\d[\d\s/()-]{7,18}\d)|"
         r"((?:\+43|0043)[\s/()-]*\d[\d\s/()-]{6,16}\d|\b06\d{2}[\s/-]*\d[\d\s/-]{5,12}\d)", re.I),
     "extra_optional": re.compile(r"optional|anmietbar|zusätzlich|gegen aufpreis|zzgl|zuzüglich|separat|extra", re.I),
+    # Газове опалення — позначаємо ❗❗❗ (ви такі квартири оминаєте)
+    "gas": re.compile(
+        r"(?<![a-zäöüß])(?:erd)?gas[\s-]?(?:etagen|zentral|kombi|brennwert|wand|einzelofen)?[\s-]?"
+        r"(?:heizung|therme|heizkessel|kessel|ofen|öfen)|(?<![a-zäöüß])kombitherme|"
+        r"(?:heizung|heizungsart|beheizung|energieträger|befeuerung|heizsystem|wärmeerzeugung|heating)\w*"
+        r"[^.\n]{0,30}?(?<![a-zäöüß])(?:erd)?gas\b", re.I),
+    "no_gas": re.compile(r"(?:kein|keine|ohne)\s+gas|gasfrei|(?:kein|keine|ohne)\s+gasanschluss", re.I),
     "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
     "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
     "abloese_any": re.compile(r"abl[öo]se", re.I),
@@ -335,6 +342,10 @@ def evaluate(l: Listing) -> Verdict:
         if m:
             v.info["energy"], v.info["energy_quote"] = kind, quote_around(t, m)
             break
+
+    # --- газове опалення
+    m = RX["gas"].search(t)
+    v.info["gas"] = quote_around(t, m) if m and not RX["no_gas"].search(t) else ""
 
     # --- додаткові витрати (не в ліміті) — для уточнення
     v.info["extras"] = find_extras(t)
