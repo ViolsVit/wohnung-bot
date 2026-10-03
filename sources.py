@@ -240,7 +240,9 @@ def immoscout_details(l: Listing) -> Listing:
         bk = parse_num(value_after(lines, "Betriebskosten") or "") or 0
         bk_vat = parse_num(value_after(lines, "USt. Betriebskosten") or "") or 0
         heat = parse_num(value_after(lines, "Heizkosten Netto", "Heizkosten") or "") or 0
-        l.bk = round(bk + bk_vat + heat, 2) or None
+        heat_vat = parse_num(value_after(lines, "USt. Heizkosten") or "") or 0
+        l.bk = round(bk + bk_vat, 2) or None          # Heizkosten — окремо, у ліміт не входять
+        l.heating = round(heat + heat_vat, 2) or None
     elif value_after(lines, "Miete") and not tot:
         l.total_rent = parse_num(value_after(lines, "Miete"))   # приватні: одна сума
     return l
@@ -318,7 +320,11 @@ def _ds_apply(l: Listing, e: dict):
     others = [c[k].get("net") or 0 for k in ("OPERATING_COSTS", "HEATING_COSTS", "OTHER_COSTS") if k in c]
     if "SUM_OF_RENT" in c and "OPERATING_COSTS" in c and c["SUM_OF_RENT"].get("net"):
         l.rent_net = round(c["SUM_OF_RENT"]["net"] - sum(others), 2)
-        l.bk = round(sum(others) * (1 + config.VAT_RATE), 2)
+        bk_net = sum(c[k].get("net") or 0 for k in ("OPERATING_COSTS", "OTHER_COSTS") if k in c)
+        l.bk = round(bk_net * (1 + config.VAT_RATE), 2)
+    if "HEATING_COSTS" in c:                  # Heizkosten — окремо, у ліміт не входять
+        h = c["HEATING_COSTS"]
+        l.heating = h.get("gross") or (round(h["net"] * 1.2, 2) if h.get("net") else None)
     if "DEPOSIT" in c:
         l.deposit = c["DEPOSIT"].get("net") or c["DEPOSIT"].get("gross")
     for k, val in prop.items():             # дата заселення, якщо DER STANDARD її дає
@@ -436,6 +442,7 @@ def wohnnet_details(l: Listing) -> Listing:
     total = parse_num(value_after(lines, "Mietpreis", "Gesamtmiete", "Gesamtbelastung") or "")
     l.total_rent = total or l.total_rent
     bk = parse_num(value_after(lines, "Betriebskosten") or "")
+    l.heating = parse_num(value_after(lines, "Heizkosten") or "") or None
     mwst = parse_num(value_after(lines, "MWSt.", "MwSt.", "USt.") or "")
     net = parse_num(value_after(lines, "Nettomiete", "Miete netto", "Hauptmietzins") or "")
     if net:

@@ -23,7 +23,8 @@ class Listing:
     rent_vat: Optional[float] = None     # USt на Miete, якщо сайт її показує
     rent_gross: Optional[float] = None   # Miete з USt (якщо сайт дає одразу)
     bk: Optional[float] = None           # Betriebskosten — обслуговування будинку (з USt), без опалення/світла
-    total_rent: Optional[float] = None   # загальна сума на місяць (усе разом)
+    total_rent: Optional[float] = None   # загальна сума на місяць (усе разом, як на сайті)
+    heating: Optional[float] = None      # Heizkosten, якщо сайт показує окремо (у ліміт НЕ входять)
     deposit: Optional[float] = None
     # --- квартира
     area: Optional[float] = None
@@ -80,13 +81,28 @@ def parse_num(s) -> Optional[float]:
 
 
 def monthly_cost(l: Listing) -> Optional[float]:
-    """Сума для ліміту: Miete з USt + Betriebskosten (без опалення/світла)."""
+    """Сума для ліміту: Miete + Betriebskosten з USt, без опалення та інших доплат.
+    Якщо сайт дав і складові, і загальну суму, беремо МЕНШЕ з двох:
+      - загальна більша → у ній є щось понад Miete+BK (Heizung, Garage, Möbel…) — у ліміт не йде;
+      - загальна менша → найчастіше приватний власник без USt, і наш розрахунок +10 % завищений."""
     rent, _ = rent_with_tax(l)
-    if rent is not None and l.bk:
-        return round(rent + l.bk, 2)
-    if l.total_rent:
-        return max(l.total_rent, rent or 0)
+    comps = round(rent + l.bk, 2) if rent is not None and l.bk else None
+    total = round(l.total_rent - (l.heating or 0), 2) if l.total_rent else None
+    if comps is not None and total is not None:
+        return min(comps, total)
+    if comps is not None:
+        return comps
+    if total is not None:
+        return max(total, rent or 0)
     return rent
+
+
+def total_gap(l: Listing) -> float:
+    """Різниця між загальною сумою з сайту (без окремо вказаного опалення) і Miete+BK."""
+    rent, _ = rent_with_tax(l)
+    if not (l.total_rent and rent is not None and l.bk):
+        return 0.0
+    return round(l.total_rent - (l.heating or 0) - (rent + l.bk), 2)
 
 
 def rent_with_tax(l: Listing):
@@ -119,7 +135,12 @@ RX = {
     "no_dishwasher": re.compile(r"(ohne|kein(en)?)\s+(geschirrsp[üu]l|sp[üu]lmaschine)", re.I),
     "garage": re.compile(r"tiefgarage|garage|carport", re.I),
     "parking": re.compile(r"stellpl[aä]tz|parkpl[aä]tz|parking", re.I),
-    "terrace": re.compile(r"terrasse|terrace", re.I),
+    # Außenflächen: окремо Terrasse / Garten / Balkon / Loggia; спільні (Gemeinschafts-, allgemein) — не рахуємо
+    "terrace": re.compile(r"(?<![a-zäöüß])(?:dach|garten|eck|gemeinschafts)?terrass(?:e|en)?\b|\bterrace\b", re.I),
+    "garden": re.compile(r"(?<![a-zäöüß])(?:eigen|privat|haus|gemeinschafts)?garten(?:anteil|fläche|nutzung)?\b|\bgarden\b", re.I),
+    "balcony": re.compile(r"(?<![a-zäöüß])balkon(?:e)?\b|\bbalcony\b", re.I),
+    "loggia": re.compile(r"(?<![a-zäöüß])loggi(?:a|en)\b", re.I),
+    "shared": re.compile(r"gemeinschafts|allgemein|gemeinsam|für alle (?:bewohner|mieter)", re.I),
     "altbau": re.compile(r"\baltbau|stilaltbau|gründerzeit|jahrhundertwende|OLD_BUILDING", re.I),
     "neubau": re.compile(r"\bneubau|erstbezug|neu errichtet|NEW_BUILDING", re.I),
     "year": re.compile(r"(?:baujahr|errichtet|erbaut|fertiggestellt)\s*(?:im\s+jahr(?:e)?\s*|:|\s)\s*(1[89]\d\d|20\d\d)", re.I),
@@ -145,6 +166,7 @@ RX = {
     "phone": re.compile(
         r"\b(?:tel(?:efon|\.)?|mobil|handy|phone|t)\s*[.:]?\s*((?:\+|00)?\d[\d\s/()-]{7,18}\d)|"
         r"((?:\+43|0043)[\s/()-]*\d[\d\s/()-]{6,16}\d|\b06\d{2}[\s/-]*\d[\d\s/-]{5,12}\d)", re.I),
+    "extra_optional": re.compile(r"optional|anmietbar|zusätzlich|gegen aufpreis|zzgl|zuzüglich|separat|extra", re.I),
     "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
     "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
     "abloese_any": re.compile(r"abl[öo]se", re.I),
@@ -175,6 +197,42 @@ def norm_available(s: str) -> str:
     if re.fullmatch(r"(ab\s+)?sofort", s, re.I):
         return "ab sofort"
     return s
+
+
+# Додаткові щомісячні витрати понад Miete + Betriebskosten (у ліміт не входять, показуються окремо)
+EXTRAS = [
+    ("Heizkosten", r"heiz(?:ungs)?kosten(?:\s*-?\s*akonto)?|heizungsakonto|heizung"),
+    ("Warmwasser", r"warmwasser(?:kosten)?"),
+    ("Strom", r"stromkosten|strom"),
+    ("Garage/Stellplatz", r"(?:tief)?garagen(?:stell)?platz|(?:tief)?garage|(?:pkw-?)?stellplatz|parkplatz|carport"),
+    ("Möbelmiete", r"möbel(?:miete|nutzung|pauschale)"),
+    ("Lift", r"liftkosten|aufzugskosten"),
+    ("Internet/TV", r"internet(?:pauschale)?|kabel-?tv"),
+]
+EXTRA_AMOUNT = re.compile(r"[^\d€\n.;]{0,45}?(?:€|eur(?:o)?)?\s*" + NUM + r"\s*(?:€|eur(?:o)?|,-)?", re.I)
+
+
+def find_extras(text: str) -> list:
+    """[(назва, сума або None, цитата)] — лише те, що прямо написано в оголошенні."""
+    out, seen = [], set()
+    for name, pat in EXTRAS:
+        for m in re.finditer(r"(?<![a-zäöüß])(?:" + pat + r")", text, re.I):
+            tail = text[m.end():m.end() + 60]
+            am = EXTRA_AMOUNT.match(tail)
+            amount = parse_num(am.group(1)) if am else None
+            if amount is not None and not (5 <= amount <= 400):
+                amount = None                       # не схоже на щомісячну доплату
+            if amount is not None and re.search(r"kauf|einmalig|ablöse|m²|m2|qm", text[m.start():m.end() + 70], re.I):
+                amount = None
+            quote = quote_around(text, m)
+            if amount is None and not RX["extra_optional"].search(quote):
+                continue                            # просто згадка (напр. «Garage im Haus») — не витрата
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append((name, amount, quote))
+            break
+    return out
 
 
 def first_amount(rx, text, min_value=50):
@@ -278,6 +336,9 @@ def evaluate(l: Listing) -> Verdict:
             v.info["energy"], v.info["energy_quote"] = kind, quote_around(t, m)
             break
 
+    # --- додаткові витрати (не в ліміті) — для уточнення
+    v.info["extras"] = find_extras(t)
+
     # --- виключення за змістом
     if RX["wohnticket"].search(t):
         v.reasons.append("потрібен Wohnticket")
@@ -363,8 +424,22 @@ def evaluate(l: Listing) -> Verdict:
         v.pluses.append("🚗 гараж")
     elif RX["parking"].search(feats) or RX["parking"].search(t):
         v.pluses.append("🅿️ паркомісце")
-    if RX["terrace"].search(feats) or RX["terrace"].search(t):
-        v.pluses.append("🌿 тераса")
+    for key, label in (("terrace", "🌿 Terrasse"), ("garden", "🌳 Garten"),
+                       ("balcony", "☀️ Balkon"), ("loggia", "☀️ Loggia")):
+        own = shared = False
+        for src in (feats, t):
+            for m in RX[key].finditer(src):
+                before = re.split(r"[,.;:\n|]", src[max(0, m.start() - 30):m.start()])[-1]
+                after = re.split(r"[,.;:\n|]", src[m.end():m.end() + 40])[0]
+                ctx = before + " " + after
+                if RX["shared"].search(m.group(0)) or RX["shared"].search(ctx):
+                    shared = True
+                else:
+                    own = True
+        if own:
+            v.pluses.append(label)
+        elif shared:
+            v.pluses.append(label + " (allgemein)")
 
     if v.reasons:
         v.status = "reject"
