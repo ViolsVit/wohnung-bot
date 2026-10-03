@@ -134,6 +134,9 @@ def format_message(l: Listing, v) -> str:
     else:
         full = place
     out.append(f"📍 <b>{e(full)}</b>")
+    sub = getattr(config, "SUBURBS", {}).get(l.postcode)
+    if sub:
+        out.append(f"      🚆 ≈ {sub[1]} хв до Stephansplatz (орієнтовно)")
 
     # --- 2. щомісячна сума (Miete + Betriebskosten, з USt)
     rent, est = v.info.get("rent"), v.info.get("rent_estimated")

@@ -21,32 +21,54 @@ EXCLUDED_POSTCODES = {"1210"}
 # Максимум оголошень, які бот детально перевіряє за один запуск (щоб не навантажувати сайти)
 MAX_DETAILS_PER_RUN = 40
 
-# ---------- Географія: лише Відень і найближчі передмістя з S-Bahn / U-Bahn / Badner Bahn ----------
-# Відень — усі індекси 1010–1230. Плюс ці міста (≈ до 1 км від меж Відня):
-NOE_POSTCODES = {
-    # Південь
-    "2340": "Mödling", "2344": "Maria Enzersdorf", "2345": "Brunn am Gebirge",
-    "2351": "Wiener Neudorf", "2353": "Guntramsdorf", "2361": "Laxenburg",
-    "2362": "Biedermannsdorf", "2331": "Vösendorf", "2333": "Leopoldsdorf",
-    "2380": "Perchtoldsdorf", "2352": "Gumpoldskirchen", "2371": "Hinterbrühl",
-    "2384": "Breitenfurt", "2391": "Kaltenleutgeben",
-    # Південний схід (S7)
-    "2320": "Schwechat", "2322": "Zwölfaxing", "2325": "Himberg", "2326": "Maria-Lanzendorf",
-    "2332": "Hennersdorf",
-    # Схід / північний схід
-    "2301": "Groß-Enzersdorf", "2232": "Deutsch-Wagram", "2201": "Gerasdorf",
-    # Північ (S3/S4)
-    "2100": "Korneuburg", "2102": "Bisamberg", "2103": "Langenzersdorf",
-    # Захід (S40, S50)
-    "3400": "Klosterneuburg", "3002": "Purkersdorf", "3003": "Gablitz",
-    "3011": "Tullnerbach", "3013": "Pressbaum", "2381": "Laab im Walde",
+# ---------- Географія: Відень + передмістя, звідки ≈ до MAX_TRANSIT_MINUTES до центру ----------
+# Відень — усі індекси 1010–1230. Передмістя: індекс → (назва, ≈ хвилин громадським транспортом
+# від дому до Stephansplatz, з урахуванням дороги до станції). Час орієнтовний — у кожному
+# повідомленні є кнопка маршруту для точної перевірки.
+MAX_TRANSIT_MINUTES = 65
+
+SUBURBS = {
+    # Південь (S1/S2/S3, Badner Bahn, Südbahn)
+    "2340": ("Mödling", 30), "2344": ("Maria Enzersdorf", 35), "2345": ("Brunn am Gebirge", 35),
+    "2351": ("Wiener Neudorf", 35), "2353": ("Guntramsdorf", 40), "2361": ("Laxenburg", 45),
+    "2362": ("Biedermannsdorf", 40), "2331": ("Vösendorf", 35), "2333": ("Leopoldsdorf", 40),
+    "2380": ("Perchtoldsdorf", 35), "2352": ("Gumpoldskirchen", 40), "2371": ("Hinterbrühl", 45),
+    "2384": ("Breitenfurt", 45), "2391": ("Kaltenleutgeben", 50),
+    "2481": ("Achau", 45), "2482": ("Münchendorf", 50), "2483": ("Ebreichsdorf", 45),
+    "2500": ("Baden", 45), "2511": ("Pfaffstätten", 50), "2512": ("Tribuswinkel", 55),
+    "2514": ("Traiskirchen", 50), "2540": ("Bad Vöslau", 55), "2542": ("Kottingbrunn", 55),
+    "2544": ("Leobersdorf", 60), "2700": ("Wiener Neustadt", 55),
+    # Південний схід / схід (S7, S60, Ostbahn)
+    "2320": ("Schwechat", 25), "2322": ("Zwölfaxing", 35), "2325": ("Himberg", 40),
+    "2326": ("Maria-Lanzendorf", 35), "2332": ("Hennersdorf", 40), "2401": ("Fischamend", 40),
+    "2432": ("Schwadorf", 50), "2434": ("Götzendorf an der Leitha", 50), "2435": ("Ebergassing", 50),
+    "2440": ("Gramatneusiedl", 45), "2460": ("Bruck an der Leitha", 50),
+    "7100": ("Neusiedl am See", 60), "7111": ("Parndorf", 55),
+    # Північний схід (S1, S2)
+    "2301": ("Groß-Enzersdorf", 40), "2232": ("Deutsch-Wagram", 30), "2201": ("Gerasdorf", 35),
+    "2230": ("Gänserndorf", 45), "2231": ("Strasshof", 35), "2120": ("Wolkersdorf", 35),
+    "2130": ("Mistelbach", 60),
+    # Північ (S3, S4)
+    "2100": ("Korneuburg", 30), "2102": ("Bisamberg", 30), "2103": ("Langenzersdorf", 30),
+    "2104": ("Spillern", 40), "2105": ("Leobendorf", 45), "2000": ("Stockerau", 40),
+    # Захід / північний захід (S40, S50, Westbahn)
+    "3400": ("Klosterneuburg", 30), "3420": ("Kritzendorf", 35), "3422": ("Greifenstein", 40),
+    "3423": ("St. Andrä-Wördern", 40), "3425": ("Langenlebarn", 45), "3430": ("Tulln", 45),
+    "3451": ("Michelhausen / Tullnerfeld", 40),
+    "3002": ("Purkersdorf", 30), "3003": ("Gablitz", 40), "3011": ("Tullnerbach", 35),
+    "3013": ("Tullnerbach-Lawies", 40), "3021": ("Pressbaum", 40), "2381": ("Laab im Walde", 45),
+    "3031": ("Rekawinkel", 45), "3032": ("Eichgraben", 50), "3040": ("Neulengbach", 55),
+    "3100": ("St. Pölten", 50),
 }
+# (для сумісності зі старим кодом) лише ті, що вкладаються в ліміт часу
+NOE_POSTCODES = {pc: name for pc, (name, mins) in SUBURBS.items() if mins <= MAX_TRANSIT_MINUTES}
 
 # ---------- Джерела ----------
 # Основні — перевіряються кожні 20 хв.
-# willhaben areaId: 900 Відень, 317 Mödling, 307 Bruck/Leitha (Schwechat), 312 Korneuburg,
-# 308 Gänserndorf, 321 Tulln (Klosterneuburg), 319 St. Pölten-Land (Purkersdorf)
-WILLHABEN_AREAS = [900, 317, 307, 312, 308, 321, 319]
+# willhaben areaId (= код округу): 900 Відень, 317 Mödling, 307 Bruck/Leitha (Schwechat), 312 Korneuburg,
+# 308 Gänserndorf, 321 Tulln (Klosterneuburg), 319 St. Pölten-Land (Purkersdorf), 306 Baden,
+# 316 Mistelbach (Wolkersdorf), 302 St. Pölten, 304 Wiener Neustadt, 107 Neusiedl am See
+WILLHABEN_AREAS = [900, 317, 307, 312, 308, 321, 319, 306, 316, 302, 304, 107]
 
 IMMOSCOUT_REGIONS = [                     # (регіон, скільки сторінок по 15 оголошень)
     ("wien/wien", 3),
@@ -64,7 +86,7 @@ DERSTANDARD_REGIONS = [                   # (регіон, сторінок по
     ("purkersdorf", 1), ("korneuburg", 1), ("perchtoldsdorf", 1),
 ]
 WOHNNET_REGIONS = [                       # (регіон, сторінок по 20)
-    ("wien", 4), ("moedling", 1), ("niederoesterreich", 2),
+    ("wien", 4), ("moedling", 1), ("niederoesterreich", 4),
 ]
 
 # Куди будувати маршрут громадським транспортом у повідомленні
