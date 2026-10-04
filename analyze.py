@@ -173,6 +173,20 @@ RX = {
         r"(?:heizung|therme|heizkessel|kessel|ofen|öfen)|(?<![a-zäöüß])kombitherme|"
         r"(?:heizung|heizungsart|beheizung|energieträger|befeuerung|heizsystem|wärmeerzeugung|heating)\w*"
         r"[^.\n]{0,30}?(?<![a-zäöüß])(?:erd)?gas\b", re.I),
+    # Електроопалення (Wärmepumpe не рахуємо — вона економна)
+    "electric": re.compile(
+        r"(?<![a-zäöüß])(?:elektro|strom|e)[\s-]?(?:direkt|zentral|fußboden|fussboden)?[\s-]?heiz(?:ung|ungen|körper|er|kessel)|"
+        r"nachtspeicher(?:ofen|öfen|heizung)?|infrarot[\s-]?(?:heizung|paneel|panele|heizkörper)|"
+        r"(?:heizung|heizungsart|beheizung|energieträger|heizsystem|heating)\w*[^.\n]{0,25}?"
+        r"(?<![a-zäöüß])(?:strom|elektrisch|elektro)\b|electric heating", re.I),
+    # Заборона тварин
+    "no_pets": re.compile(
+        r"keine\s+(?:haus)?tiere|(?:haus)?tiere?\s+(?:sind\s+|ist\s+)?(?:leider\s+)?(?:nicht|un)\s*(?:erlaubt|gestattet|gewünscht|möglich|zulässig)|"
+        r"(?:haus)?tierhaltung\s+(?:ist\s+)?(?:leider\s+)?(?:nicht\s+(?:erlaubt|gestattet|gewünscht|möglich)|untersagt|verboten|ausgeschlossen)|"
+        r"(?:haus)?tiere\s*[:\-]\s*nein|ohne\s+(?:haus)?tiere|no\s+pets|pets\s+not\s+allowed|"
+        r"(?:hunde|hundehaltung)\s+(?:sind\s+|ist\s+)?(?:leider\s+)?(?:nicht\s+(?:erlaubt|gestattet)|untersagt|verboten)", re.I),
+    "pets_ok": re.compile(r"(?:haus)?tiere\s+(?:sind\s+)?(?:erlaubt|gestattet|willkommen)|haustierfreundlich|"
+                          r"(?:haus)?tiere\s*[:\-]\s*ja|tierhaltung\s+(?:ist\s+)?(?:erlaubt|gestattet)|pets\s+allowed", re.I),
     "no_gas": re.compile(r"(?:kein|keine|ohne)\s+gas|gasfrei|(?:kein|keine|ohne)\s+gasanschluss", re.I),
     "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
     "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
@@ -343,9 +357,21 @@ def evaluate(l: Listing) -> Verdict:
             v.info["energy"], v.info["energy_quote"] = kind, quote_around(t, m)
             break
 
-    # --- газове опалення
+    # --- газове / електричне опалення: ❗❗❗, і відсіюємо, якщо дорожче за TARGET_RENT
     m = RX["gas"].search(t)
     v.info["gas"] = quote_around(t, m) if m and not RX["no_gas"].search(t) else ""
+    m = RX["electric"].search(t)
+    v.info["electric"] = quote_around(t, m) if m else ""
+    kinds = [k for k, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info[key]]
+    if kinds and monthly is not None and monthly > config.TARGET_RENT:
+        v.reasons.append(f"{' + '.join(kinds)} і дорожче {config.TARGET_RENT} €")
+
+    # --- тварини: у вас собака
+    m = RX["no_pets"].search(t)
+    if m:
+        v.reasons.append(f"тварини заборонені: «{m.group(0)}»")
+    elif RX["pets_ok"].search(t):
+        v.pluses.append("🐕 тварини дозволені")
 
     # --- додаткові витрати (не в ліміті) — для уточнення
     v.info["extras"] = find_extras(t)

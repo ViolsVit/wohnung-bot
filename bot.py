@@ -114,8 +114,9 @@ def format_message(l: Listing, v) -> str:
     head.append({"ok": "✅ <b>Підходить</b>", "check": "⚠️ <b>Підходить, але уточнити</b>",
                  "reject": "❌ <b>Відсіяно</b>"}[v.status])
     out = [" · ".join(head), f"<b>{e(l.title.strip()[:160])}</b>", ""]
-    if v.info.get("gas"):
-        out[0:0] = [f"❗❗❗ <b>Gasheizung</b>: <i>«{e(v.info['gas'])}»</i>"]
+    flags = [f"❗❗❗ <b>{name}</b>: <i>«{e(v.info[key])}»</i>"
+             for name, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info.get(key)]
+    out[0:0] = flags
 
     # --- 1. локація: вулиця + номер (якщо сайт дає), індекс, місто/район
     if l.postcode in config.NOE_POSTCODES:
