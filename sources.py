@@ -21,18 +21,30 @@ session.headers.update({
 })
 
 
+try:                                     # «справжній» браузерний відбиток — для сайтів із захистом від ботів
+    from curl_cffi import requests as browser_requests
+except Exception:                        # noqa — якщо бібліотеки немає, працюємо як раніше
+    browser_requests = None
+BROWSER_HOSTS = ("derstandard.at",)
+
+
 def get(url, **kw):
     import time
     last = None
+    as_browser = browser_requests is not None and any(h in url for h in BROWSER_HOSTS)
     for attempt in range(3):
         try:
-            r = session.get(url, timeout=30, **kw)
+            if as_browser:
+                r = browser_requests.get(url, impersonate="chrome", timeout=30,
+                                         headers={"Accept-Language": "de-AT,de;q=0.9,en;q=0.8"}, **kw)
+            else:
+                r = session.get(url, timeout=30, **kw)
             if r.status_code == 200:
                 return r.text
             last = f"HTTP {r.status_code}"
             if r.status_code in (403, 404, 410):
                 break
-        except requests.RequestException as e:
+        except Exception as e:  # noqa — помилки мережі (requests або curl_cffi)
             last = str(e)
         time.sleep(3 + attempt * 5)
     raise RuntimeError(f"{last} — {url}")
