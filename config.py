@@ -81,10 +81,7 @@ IMMOSCOUT_REGIONS = [                     # (регіон, скільки сто
 ]
 
 # Додаткові — перевіряються двічі на день (07:30 і 19:30)
-DERSTANDARD_REGIONS = [                   # (регіон, сторінок по ~15)
-    ("wien", 4), ("bezirk-moedling", 1), ("schwechat", 1), ("klosterneuburg", 1),
-    ("purkersdorf", 1), ("korneuburg", 1), ("perchtoldsdorf", 1),
-]
+DERSTANDARD_REGIONS = []
 WOHNNET_REGIONS = [                       # (регіон, сторінок по 20)
     ("wien", 4), ("moedling", 1), ("niederoesterreich", 4),
 ]
