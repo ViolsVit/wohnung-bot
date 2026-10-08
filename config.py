@@ -18,6 +18,10 @@ MAX_DEPOSIT = 6000         # € — застава (Kaution)
 MAX_ABLOESE = 4000         # € — викуп меблів/кухні (Ablöse)
 EXCLUDED_POSTCODES = {"1210"}
 
+# Заселення: не пізніше цієї дати (рік, місяць, день). «ab sofort» і без дати — пропускаємо
+import datetime as _dt
+LATEST_MOVE_IN = _dt.date(2026, 12, 5)
+
 # Максимум оголошень, які бот детально перевіряє за один запуск (щоб не навантажувати сайти)
 MAX_DETAILS_PER_RUN = 40
 

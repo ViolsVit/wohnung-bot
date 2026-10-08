@@ -181,12 +181,29 @@ RX = {
         r"(?<![a-zäöüß])(?:strom|elektrisch|elektro)\b|electric heating", re.I),
     # Заборона тварин
     "no_pets": re.compile(
-        r"keine\s+(?:haus)?tiere|(?:haus)?tiere?\s+(?:sind\s+|ist\s+)?(?:leider\s+)?(?:nicht|un)\s*(?:erlaubt|gestattet|gewünscht|möglich|zulässig)|"
-        r"(?:haus)?tierhaltung\s+(?:ist\s+)?(?:leider\s+)?(?:nicht\s+(?:erlaubt|gestattet|gewünscht|möglich)|untersagt|verboten|ausgeschlossen)|"
-        r"(?:haus)?tiere\s*[:\-]\s*nein|ohne\s+(?:haus)?tiere|no\s+pets|pets\s+not\s+allowed|"
-        r"(?:hunde|hundehaltung)\s+(?:sind\s+|ist\s+)?(?:leider\s+)?(?:nicht\s+(?:erlaubt|gestattet)|untersagt|verboten)", re.I),
-    "pets_ok": re.compile(r"(?:haus)?tiere\s+(?:sind\s+)?(?:erlaubt|gestattet|willkommen)|haustierfreundlich|"
-                          r"(?:haus)?tiere\s*[:\-]\s*ja|tierhaltung\s+(?:ist\s+)?(?:erlaubt|gestattet)|pets\s+allowed", re.I),
+        r"(?<![a-zäöüß])(?:keine|kein|ohne)\s+(?:haus|klein|groß)?(?:tiere|tier|tierhaltung|hunde|hund|katzen)\b|"
+        r"(?<![a-zäöüß])(?:haus|klein)?(?:tiere?|tierhaltung|hunde?|hundehaltung|katzen)"
+        r"(?:\s+(?:und|oder|bzw\.?)\s+\w+)?\s*(?:sind|ist|:|-)?\s*(?:leider\s+|grundsätzlich\s+|ausdrücklich\s+)?"
+        r"(?:nicht\s+(?:erlaubt|gestattet|gewünscht|erwünscht|möglich|zulässig|gestattet)|unerwünscht|untersagt|"
+        r"verboten|ausgeschlossen|nein\b)|"
+        r"tierhaltung\s+(?:wird\s+)?nicht\s+(?:akzeptiert|geduldet)|nichtraucher\s+(?:und|&)\s+(?:ohne|keine)\s+(?:haus)?tiere|"
+        r"\bno\s+(?:pets|dogs|animals)\b|pets\s+(?:are\s+)?not\s+allowed|"
+        r"(?:pets?|haustier\w*|tierhaltung)\s*[:=]\s*(?:nein|no|false|nicht\s+erlaubt)\b", re.I),
+    "pets_ok": re.compile(
+        r"(?<![a-zäöüß])(?:haus|klein)?(?:tiere?|tierhaltung|hunde?)\s+(?:sind\s+|ist\s+)?(?:herzlich\s+)?"
+        r"(?:erlaubt|gestattet|willkommen|möglich)|haustierfreundlich|hundefreundlich|"
+        r"(?:pets?|haustier\w*|tierhaltung)\s*[:=]\s*(?:ja|yes|true|erlaubt)\b|pets\s+(?:are\s+)?(?:allowed|welcome)", re.I),
+    "pets_ask": re.compile(r"(?:haus)?(?:tiere?|tierhaltung|hunde?)[^.\n]{0,25}?(?:nach|auf)\s+(?:absprache|anfrage|vereinbarung)|"
+                           r"(?:nach|auf)\s+(?:absprache|anfrage)[^.\n]{0,25}?(?:haus)?tiere?", re.I),
+    # Рієлтор приймає запити лише через форму / сайт
+    "form_only": re.compile(
+        r"(?:anfragen?|kontaktaufnahme|besichtigungsanfragen?|terminanfragen?)[^.\n]{0,60}?(?:ausschlie(?:ß|ss)lich|nur)"
+        r"[^.\n]{0,40}?(?:kontaktformular|formular|anfrageformular|über\s+(?:die\s+|unsere\s+)?(?:plattform|website|"
+        r"webseite|homepage|willhaben|immoscout|portal|seite))|"
+        r"(?:ausschlie(?:ß|ss)lich|nur)\s+(?:über|via|per|mittels)\s+(?:das\s+|unser\s+|dem\s+)?(?:kontakt|anfrage)?formular|"
+        r"e-?mail-?anfragen\s+(?:werden|können)\s+(?:leider\s+)?nicht|anfragen\s+per\s+e-?mail\s+(?:werden|können)\s+(?:leider\s+)?nicht|"
+        r"bitte\s+(?:nutzen|verwenden|benutzen)\s+sie\s+(?:ausschlie(?:ß|ss)lich\s+|nur\s+)?(?:das|unser)\s+(?:kontakt|anfrage)?formular|"
+        r"only\s+(?:via|through)\s+(?:the\s+|our\s+)?(?:contact\s+)?form", re.I),
     "no_gas": re.compile(r"(?:kein|keine|ohne)\s+gas|gasfrei|(?:kein|keine|ohne)\s+gasanschluss", re.I),
     "abloese_free": re.compile(r"(keine|ohne)\s+(möbel|küchen|investitions)?ablöse|ablösefrei", re.I),
     "abloese_eur": re.compile(r"(?:möbel|küchen|investitions|einrichtungs)?abl[öo]se[^\d€\n]{0,40}(?:€|eur(?:o)?)?\s*" + NUM, re.I),
@@ -197,8 +214,10 @@ RX = {
 
 def quote_around(text: str, m, width: int = 110) -> str:
     """Коротка цитата з оголошення навколо знахідки (у межах речення)."""
-    start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
-    ends = [i for i in (text.find(".", m.end()), text.find("\n", m.end())) if i != -1]
+    start = max(text.rfind(". ", 0, m.start()) + 1, text.rfind("\n", 0, m.start()), text.rfind("! ", 0, m.start()) + 1) + 1
+    ends = [i for i in (text.find(". ", m.end()), text.find("\n", m.end()), text.find("! ", m.end())) if i != -1]
+    if text.rstrip().endswith(".") and not ends:
+        ends = [len(text.rstrip()) - 1]
     end = min(ends) if ends else len(text)
     pre = ""
     if end - start > width and m.start() - start > 25:     # довге речення — починаємо ближче до знахідки
@@ -208,6 +227,44 @@ def quote_around(text: str, m, width: int = 110) -> str:
     if len(q) > width:
         q = q[:width].rsplit(" ", 1)[0] + " …"
     return pre + q
+
+
+MONTH_NUM = {"jän": 1, "jan": 1, "feb": 2, "mär": 3, "mar": 3, "apr": 4, "mai": 5, "jun": 6, "jul": 7, "aug": 8,
+             "sep": 9, "okt": 10, "nov": 11, "dez": 12}
+
+
+def move_in_date(avail, today=None):
+    """Перетворює «01.11.2026», «Mitte Dezember 2026», «2027-01-01» на дату. «ab sofort» → сьогодні. Невідоме → None."""
+    import datetime as _dt
+    if not avail:
+        return None
+    today = today or _dt.date.today()
+    a = avail.lower().strip()
+    if "sofort" in a:
+        return today
+    if "vereinbarung" in a or "absprache" in a:
+        return None
+
+    def mk(y, mo, d):
+        if y is None:
+            y = today.year + (1 if mo < today.month - 1 else 0)
+        elif y < 100:
+            y += 2000
+        try:
+            return _dt.date(y, mo, max(1, min(d, 28 if mo == 2 else 30)))
+        except ValueError:
+            return None
+    m = re.match(r"(\d{1,2})\.\s?(\d{1,2})\.?\s?(\d{2,4})?", a)
+    if m:
+        return mk(int(m.group(3)) if m.group(3) else None, int(m.group(2)), int(m.group(1)))
+    m = re.search(r"(anfang|mitte|ende)?\s*(?:(\d{1,2})\.\s*)?(j[aä]n|feb|m[aä]r|apr|mai|jun|jul|aug|sep|okt|nov|dez)\w*"
+                  r"(?:\s+(\d{4}))?", a)
+    if m:
+        key = m.group(3).replace("jan", "jan")
+        mo = MONTH_NUM.get(key, MONTH_NUM.get(key.replace("a", "ä")))
+        day = int(m.group(2)) if m.group(2) else {"anfang": 1, "mitte": 15, "ende": 28}.get(m.group(1), 1)
+        return mk(int(m.group(4)) if m.group(4) else None, mo, day)
+    return None
 
 
 def norm_available(s: str) -> str:
@@ -366,12 +423,28 @@ def evaluate(l: Listing) -> Verdict:
     if kinds and monthly is not None and monthly > config.TARGET_RENT:
         v.reasons.append(f"{' + '.join(kinds)} і дорожче {config.TARGET_RENT} €")
 
+    # --- лише через форму на сайті
+    m = RX["form_only"].search(t)
+    v.info["form_only"] = quote_around(t, m) if m else ""
+
     # --- тварини: у вас собака
     m = RX["no_pets"].search(t)
     if m:
+        v.info["pets"] = ("no", quote_around(t, m))
         v.reasons.append(f"тварини заборонені: «{m.group(0)}»")
-    elif RX["pets_ok"].search(t):
-        v.pluses.append("🐕 тварини дозволені")
+    elif (m := RX["pets_ok"].search(t)):
+        v.info["pets"] = ("yes", quote_around(t, m))
+    elif (m := RX["pets_ask"].search(t)):
+        v.info["pets"] = ("ask", quote_around(t, m))
+    else:
+        v.info["pets"] = (None, "")
+
+    # --- дата заселення: не пізніше LATEST_MOVE_IN
+    latest = getattr(config, "LATEST_MOVE_IN", None)
+    when = move_in_date(v.info.get("available"))
+    v.info["move_in"] = when
+    if latest and when and when > latest:
+        v.reasons.append(f"заселення {v.info['available']} — пізніше {latest:%d.%m.%Y}")
 
     # --- додаткові витрати (не в ліміті) — для уточнення
     v.info["extras"] = find_extras(t)

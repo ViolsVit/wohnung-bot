@@ -75,30 +75,26 @@ def norm_phone_display(p: str) -> str:
 
 
 def extra_lines(l: Listing, v, gap: float) -> list:
-    e = html.escape
-    lines, known = [], 0.0
-    energy, quote = v.info.get("energy"), v.info.get("energy_quote")
+    """Короткий перелік того, що НЕ входить у ліміт: опалення, гараж, меблі …"""
+    items, known = [], 0.0
+    energy = v.info.get("energy")
     if l.heating:
-        lines.append(f"• 🔥 Heizkosten {eur(l.heating)}")
-    for name, amount, q in v.info.get("extras") or []:
-        if name == "Heizkosten" and l.heating:
-            continue
-        if amount:
-            known += amount
-        if q == quote:
-            quote = ""                  # та сама цитата — не дублюємо нижче
-        lines.append(f"• {e(name)} {eur(amount) if amount else '(сума не вказана)'}: <i>«{e(q)}»</i>")
-    rest = gap - known                  # gap уже без окремо вказаних Heizkosten
-    if rest > 2:
-        lines.append(f"• у Gesamtmiete ({eur(l.total_rent)}) ще +{eur(rest)} не розписано "
-                     "(Heizung / Garage / Möbel …)")
-    if energy == "extra" and quote:
-        lines.append(f"• 🔥 Heizung/Warmwasser/Strom extra: <i>«{e(quote)}»</i>")
+        items.append(f"🔥 Heizkosten {eur(l.heating)}")
+    elif energy == "extra":
+        items.append("🔥 Heizung/Strom extra")
     elif energy == "incl":
-        lines.append(f"• 🔥 Heizung inkludiert: <i>«{e(quote)}»</i>")
-    elif not l.heating and energy is None:
-        lines.append("• 🔥 Heizung/Strom: im Inserat nicht erwähnt — найчастіше окремо")
-    return lines
+        items.append("🔥 Heizung inkl.")
+    else:
+        items.append("🔥 Heizung ?")
+    for name, amount, _q in v.info.get("extras") or []:
+        if name == "Heizkosten" and (l.heating or energy):
+            continue
+        known += amount or 0
+        items.append(f"{name} {eur(amount) if amount else '(сума ?)'}")
+    rest = gap - known
+    if rest > 2:
+        items.append(f"+{eur(rest)} у Gesamtmiete не розписано")
+    return items
 
 
 def eur(v):
@@ -107,18 +103,19 @@ def eur(v):
 
 def format_message(l: Listing, v) -> str:
     e = html.escape
-    # --- заголовок-статус
-    head = []
-    if v.dream:
-        head.append(f"💚 <b>ДО {config.TARGET_RENT} €</b>")
+    out = []
+    # --- червоні прапорці (найважливіше — першим)
+    if v.info.get("form_only"):
+        out += ["🛑🛑🛑 <b>ЛИШЕ ЧЕРЕЗ ФОРМУ НА САЙТІ</b> 🛑🛑🛑", f"<i>«{e(v.info['form_only'])}»</i>"]
+    out += [f"❗❗❗ <b>{name}</b>: <i>«{e(v.info[key])}»</i>"
+            for name, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info.get(key)]
+
+    head = [f"💚 <b>ДО {config.TARGET_RENT} €</b>"] if v.dream else []
     head.append({"ok": "✅ <b>Підходить</b>", "check": "⚠️ <b>Підходить, але уточнити</b>",
                  "reject": "❌ <b>Відсіяно</b>"}[v.status])
-    out = [" · ".join(head), f"<b>{e(l.title.strip()[:160])}</b>", ""]
-    flags = [f"❗❗❗ <b>{name}</b>: <i>«{e(v.info[key])}»</i>"
-             for name, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info.get(key)]
-    out[0:0] = flags
+    out += [" · ".join(head), f"🏠 <b>{e(l.title.strip()[:120])}</b>", ""]
 
-    # --- 1. локація: вулиця + номер (якщо сайт дає), індекс, місто/район
+    # --- де + маршрут
     if l.postcode in config.NOE_POSTCODES:
         place = f"{l.postcode} {config.NOE_POSTCODES[l.postcode]}"
     elif l.location and l.postcode and l.postcode in l.location:
@@ -129,86 +126,71 @@ def format_message(l: Listing, v) -> str:
         place = f"{l.postcode} Wien" if l.postcode.startswith("1") else l.postcode
     addr = (l.address or "").strip(" ,")
     if addr and l.postcode and l.postcode in addr:
-        full = addr                                   # сайт уже дав повну адресу
+        full = addr
     elif addr and addr.lower() not in place.lower():
         full = f"{addr}, {place}"
     else:
         full = place
-    out.append(f"📍 <b>{e(full)}</b>")
-    sub = getattr(config, "SUBURBS", {}).get(l.postcode)
-    if sub:
-        out.append(f"      🚆 ≈ {sub[1]} хв до Stephansplatz (орієнтовно)")
-
-    # --- 2. щомісячна сума (Miete + Betriebskosten, з USt)
-    rent, est = v.info.get("rent"), v.info.get("rent_estimated")
-    monthly = v.info.get("monthly")
-    approx = " ≈" if est else ""
-    gap = total_gap(l)
-    note = ""
-    if rent and l.bk:
-        shown_rent = monthly - l.bk if gap < -2 else rent      # без USt — показуємо Miete з суми сайту
-        detail = f"Miete {eur(shown_rent)}{approx if gap >= -2 else ''} + Betriebskosten {eur(l.bk)}"
-        detail += ", inkl. USt" if gap >= -2 else ""
-        if gap < -2:
-            note = f"Gesamtmiete laut Inserat {eur(l.total_rent)} — схоже, без USt (приватний власник)"
-    elif l.total_rent and rent:
-        detail = f"Gesamtmiete; davon Miete {eur(min(rent, monthly))}, Betriebskosten nicht separat angegeben"
-    elif l.total_rent:
-        detail = "Gesamtmiete, Aufteilung nicht angegeben — може містити Heizung"
-    elif rent:
-        detail = f"nur Miete{approx}, Betriebskosten nicht angegeben"
-    else:
-        detail = ""
-    out.append(f"💶 Щомісяця: <b>{eur(monthly)}</b>" + (f" — {e(detail)}" if detail else ""))
-    if note:
-        out.append(f"      ℹ️ {e(note)}")
-
-    # --- 3. застава, 4. Ablöse
-    out.append(f"🔐 Kaution: {eur(v.info.get('deposit'))}")
-    abl = v.info.get("abloese")
-    out.append("🛋 Ablöse: " + ("keine" if abl == 0 else eur(abl) if abl else "—"))
-
-    # --- 5. площа, 6. будинок
-    size = [f"{l.area:g} м²"] if l.area else ["площа ?"]
-    if l.rooms:
-        size.append(f"{l.rooms:g} Zimmer")
-    out.append("📐 " + " · ".join(size))
-    year = v.info.get("year")
-    out.append("🏗 " + ("Neubau" if year == "новобудова" else f"Baujahr {year}" if year else "Baujahr ?"))
-
-    # --- дата заселення
-    avail = v.info.get("available")
-    out.append("📅 Verfügbar: " + (f"<b>{e(avail)}</b>" if avail else "не вказано"))
-
-    # --- 7. бонуси
-    if v.pluses:
-        out.append("⭐ " + " · ".join(v.pluses))
-
-    # --- додаткові витрати: не в ліміті, лише для уточнення
-    out += ["", "➕ <b>Додатково, не в ліміті:</b>"] + extra_lines(l, v, total_gap(l))
-    if v.warnings:
-        out += ["", "⚠️ <b>Уточнити:</b>"] + [f"• {e(w)}" for w in v.warnings]
-    if v.reasons:
-        out += ["", "❌ " + e("; ".join(v.reasons))]
-
-    # --- контакт
-    who = " — ".join(x for x in (l.contact_name, l.contact_company) if x)
-    out += ["", "👤 <b>Контакт</b>"]
-    out.append(e(who) if who else "<i>ім'я не вказане</i>")
-    if l.contact_phone:
-        out.append(f"📞 {e(norm_phone_display(l.contact_phone))}")
-    if l.contact_email:
-        out.append(f"✉️ {e(l.contact_email)}")
-    if not (l.contact_phone or l.contact_email):
-        out.append("<i>телефон/пошта — через форму на сайті</i>")
-
-    # --- посилання
     origin = f"{l.lat},{l.lon}" if l.lat and l.lon else quote_plus(full)
     maps = ("https://www.google.com/maps/dir/?api=1&travelmode=transit"
             f"&origin={origin}&destination={quote_plus(config.TRANSIT_DESTINATION)}")
-    out += ["", f'🔗 <a href="{e(l.url)}"><b>Відкрити оголошення ({S.SOURCE_NAMES[l.source]})</b></a>',
-            f'🚆 <a href="{e(maps)}">Маршрут до центру</a>',
-            "🛁 <i>Гляньте план: санвузол не має бути в спальні</i>"]
+    sub = getattr(config, "SUBURBS", {}).get(l.postcode)
+    route = f"🚆 ≈{sub[1]} хв" if sub else "🚆 маршрут"
+    out.append(f'📍 <b>{e(full)}</b> · <a href="{e(maps)}">{route}</a>')
+
+    # --- гроші
+    rent, est = v.info.get("rent"), v.info.get("rent_estimated")
+    monthly = v.info.get("monthly")
+    gap = total_gap(l)
+    if rent and l.bk:
+        if gap < -2:
+            detail = f"Miete {eur(monthly - l.bk)} + BK {eur(l.bk)}, ohne USt"
+        else:
+            detail = f"Miete {eur(rent)}{' ≈' if est else ''} + BK {eur(l.bk)}"
+    elif l.total_rent:
+        detail = "Gesamtmiete"
+    elif rent:
+        detail = "лише Miete, BK ?"
+    else:
+        detail = ""
+    out.append(f"💶 <b>{eur(monthly)}</b>" + (f" = {e(detail)}" if detail else ""))
+    abl = v.info.get("abloese")
+    out.append(f"🔐 Kaution {eur(v.info.get('deposit'))} · 🛋 Ablöse "
+               + ("keine" if abl == 0 else eur(abl) if abl else "—"))
+
+    # --- квартира
+    year = v.info.get("year")
+    flat = [f"{l.area:g} м²" if l.area else "? м²"]
+    if l.rooms:
+        flat.append(f"{l.rooms:g} Zi")
+    flat.append("🏗 " + ("Neubau" if year == "новобудова" else str(year) if year else "?"))
+    out.append("📐 " + " · ".join(flat))
+    avail = v.info.get("available")
+    pets = (v.info.get("pets") or (None, ""))[0]
+    out.append(f"📅 {('ab ' + e(avail)) if avail and not avail.startswith('ab') else e(avail) if avail else '?'} · "
+               + {"yes": "🐕 <b>erlaubt</b>", "ask": "🐕 nach Absprache", "no": "🚫 Tiere verboten"}.get(pets, "🐕 ?"))
+    if v.pluses:
+        out.append("⭐ " + " · ".join(v.pluses))
+
+    # --- не в ліміті + що уточнити
+    out += ["", "➕ " + e(" · ".join(extra_lines(l, v, gap)))]
+    todo = list(v.warnings)
+    if pets in (None, "ask"):
+        todo.append("собака")
+    todo.append("план: санвузол не в спальні")
+    out.append("⚠️ " + e(" · ".join(todo)))
+    if v.reasons:
+        out.append("❌ " + e("; ".join(v.reasons)))
+
+    # --- контакт
+    who = " — ".join(x for x in (l.contact_name, l.contact_company) if x)
+    out += ["", f"👤 {e(who) if who else '<i>ім' + chr(39) + 'я не вказане</i>'}"]
+    contact = []
+    if l.contact_phone:
+        contact.append(f"📞 {e(norm_phone_display(l.contact_phone))}")
+    if l.contact_email:
+        contact.append(f"✉️ {e(l.contact_email)}")
+    out.append(" · ".join(contact) if contact else "<i>📝 лише форма на сайті</i>")
     return "\n".join(out)
 
 
