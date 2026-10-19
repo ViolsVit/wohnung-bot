@@ -101,21 +101,7 @@ def eur(v):
     return f"{v:,.0f} €".replace(",", " ") if v is not None else "?"
 
 
-def format_message(l: Listing, v) -> str:
-    e = html.escape
-    out = []
-    # --- червоні прапорці (найважливіше — першим)
-    if v.info.get("form_only"):
-        out += ["🛑🛑🛑 <b>ЛИШЕ ЧЕРЕЗ ФОРМУ НА САЙТІ</b> 🛑🛑🛑", f"<i>«{e(v.info['form_only'])}»</i>"]
-    out += [f"❗❗❗ <b>{name}</b>: <i>«{e(v.info[key])}»</i>"
-            for name, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info.get(key)]
-
-    head = [f"💚 <b>ДО {config.TARGET_RENT} €</b>"] if v.dream else []
-    head.append({"ok": "✅ <b>Підходить</b>", "check": "⚠️ <b>Підходить, але уточнити</b>",
-                 "reject": "❌ <b>Відсіяно</b>"}[v.status])
-    out += [" · ".join(head), f"🏠 <b>{e(l.title.strip()[:120])}</b>", ""]
-
-    # --- де + маршрут
+def full_address(l: Listing) -> str:
     if l.postcode in config.NOE_POSTCODES:
         place = f"{l.postcode} {config.NOE_POSTCODES[l.postcode]}"
     elif l.location and l.postcode and l.postcode in l.location:
@@ -126,17 +112,34 @@ def format_message(l: Listing, v) -> str:
         place = f"{l.postcode} Wien" if l.postcode.startswith("1") else l.postcode
     addr = (l.address or "").strip(" ,")
     if addr and l.postcode and l.postcode in addr:
-        full = addr
-    elif addr and addr.lower() not in place.lower():
-        full = f"{addr}, {place}"
-    else:
-        full = place
+        return addr
+    if addr and addr.lower() not in place.lower():
+        return f"{addr}, {place}"
+    return place
+
+
+def format_message(l: Listing, v) -> str:
+    e = html.escape
+    out = []
+    # --- червоні прапорці (найважливіше — першим)
+    if v.info.get("form_only"):
+        out += ["🛑🛑🛑 <b>ЛИШЕ ЧЕРЕЗ ФОРМУ НА САЙТІ</b> 🛑🛑🛑", f"<i>«{e(v.info['form_only'])}»</i>"]
+    out += [f"❗❗❗ <b>{name}</b>: <i>«{e(v.info[key])}»</i>"
+            for name, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info.get(key)]
+
+    pets = (v.info.get("pets") or (None, ""))[0]
+    if pets == "yes":
+        out.append("🐕💚 <b>СОБАКИ ДОЗВОЛЕНІ</b>")
+    out.append({"ok": "✅ <b>Підходить</b>", "check": "⚠️ <b>Підходить, але уточнити</b>",
+                "reject": "❌ <b>Відсіяно</b>"}[v.status])
+    out += [f'🏠 <a href="{e(l.url)}"><b>{e(l.title.strip()[:120])}</b></a>', ""]
+
+    # --- де + маршрут (посилання на Google Maps до центру)
+    full = full_address(l)
     origin = f"{l.lat},{l.lon}" if l.lat and l.lon else quote_plus(full)
     maps = ("https://www.google.com/maps/dir/?api=1&travelmode=transit"
             f"&origin={origin}&destination={quote_plus(config.TRANSIT_DESTINATION)}")
-    sub = getattr(config, "SUBURBS", {}).get(l.postcode)
-    route = f"🚆 ≈{sub[1]} хв" if sub else "🚆 маршрут"
-    out.append(f'📍 <b>{e(full)}</b> · <a href="{e(maps)}">{route}</a>')
+    out.append(f'📍 <b>{e(full)}</b> · <a href="{e(maps)}">🚆 маршрут</a>')
 
     # --- гроші
     rent, est = v.info.get("rent"), v.info.get("rent_estimated")
@@ -166,18 +169,13 @@ def format_message(l: Listing, v) -> str:
     flat.append("🏗 " + ("Neubau" if year == "новобудова" else str(year) if year else "?"))
     out.append("📐 " + " · ".join(flat))
     avail = v.info.get("available")
-    pets = (v.info.get("pets") or (None, ""))[0]
-    out.append(f"📅 {('ab ' + e(avail)) if avail and not avail.startswith('ab') else e(avail) if avail else '?'} · "
-               + {"yes": "🐕 <b>erlaubt</b>", "ask": "🐕 nach Absprache", "no": "🚫 Tiere verboten"}.get(pets, "🐕 ?"))
+    out.append(f"📅 {('ab ' + e(avail)) if avail and not avail.startswith('ab') else e(avail) if avail else '?'}")
     if v.pluses:
         out.append("⭐ " + " · ".join(v.pluses))
 
     # --- не в ліміті + що уточнити
     out += ["", "➕ " + e(" · ".join(extra_lines(l, v, gap)))]
-    todo = list(v.warnings)
-    if pets in (None, "ask"):
-        todo.append("собака")
-    todo.append("план: санвузол не в спальні")
+    todo = list(v.warnings) + ["план: санвузол не в спальні"]
     out.append("⚠️ " + e(" · ".join(todo)))
     if v.reasons:
         out.append("❌ " + e("; ".join(v.reasons)))
@@ -191,6 +189,7 @@ def format_message(l: Listing, v) -> str:
     if l.contact_email:
         contact.append(f"✉️ {e(l.contact_email)}")
     out.append(" · ".join(contact) if contact else "<i>📝 лише форма на сайті</i>")
+    out += ["", f'🔗 <a href="{e(l.url)}"><b>Відкрити оголошення ({S.SOURCE_NAMES[l.source]})</b></a>']
     return "\n".join(out)
 
 
@@ -298,7 +297,7 @@ def main():
 
     # 💚 спершу, потім ✅, потім ⚠️; всередині — дешевші вище
     order = {"ok": 0, "check": 1, "reject": 2}
-    ready.sort(key=lambda x: (not x[1].dream, order[x[1].status], x[1].info.get("monthly") or 9999))
+    ready.sort(key=lambda x: (order[x[1].status], x[1].info.get("monthly") or 9999))
     for l, v in ready:
         tg_send(format_message(l, v), l.image or l.url, listing_buttons(l) if v.status != "reject" else None)
 

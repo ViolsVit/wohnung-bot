@@ -142,7 +142,7 @@ RX = {
     "loggia": re.compile(r"(?<![a-zäöüß])loggi(?:a|en)\b", re.I),
     "shared": re.compile(r"gemeinschafts|allgemein|gemeinsam|für alle (?:bewohner|mieter)", re.I),
     "altbau": re.compile(r"\baltbau|stilaltbau|gründerzeit|jahrhundertwende|OLD_BUILDING", re.I),
-    "neubau": re.compile(r"\bneubau|erstbezug|neu errichtet|NEW_BUILDING", re.I),
+    "neubau": re.compile(r"\bneubau|erstbezug(?!\s+nach)|neu errichtet|NEW_BUILDING", re.I),
     "year": re.compile(r"(?:baujahr|errichtet|erbaut|fertiggestellt)\s*(?:im\s+jahr(?:e)?\s*|:|\s)\s*(1[89]\d\d|20\d\d)", re.I),
     "deposit_months": re.compile(
         r"kaution\s*[:\-]?\s*(?:von\s*|in\s*höhe\s*von\s*)?(\d+(?:[.,]\d+)?)\s*"
@@ -193,6 +193,14 @@ RX = {
         r"(?<![a-zäöüß])(?:haus|klein)?(?:tiere?|tierhaltung|hunde?)\s+(?:sind\s+|ist\s+)?(?:herzlich\s+)?"
         r"(?:erlaubt|gestattet|willkommen|möglich)|haustierfreundlich|hundefreundlich|"
         r"(?:pets?|haustier\w*|tierhaltung)\s*[:=]\s*(?:ja|yes|true|erlaubt)\b|pets\s+(?:are\s+)?(?:allowed|welcome)", re.I),
+    # Лише малі тварини / малі собаки → для великого собаки не підходить
+    "small_only": re.compile(
+        r"nur\s+(?:für\s+)?klein(?:e|tiere|tierhaltung)|klein(?:tiere|tierhaltung)\s+(?:sind\s+|ist\s+)?(?:erlaubt|gestattet|möglich|willkommen)|"
+        r"keine\s+großen\s+hunde|große\s+hunde\s+(?:sind\s+)?(?:nicht|leider\s+nicht)|nur\s+kleine\s+hunde|"
+        r"kleine\s+hunde\s+(?:sind\s+)?(?:erlaubt|gestattet|möglich)|hunde?\s+bis\s+(?:max\.?\s+)?\d+\s*(?:kg|cm)|"
+        r"kein(?:e)?\s+großer?\s+hund", re.I),
+    "dogs_ok": re.compile(r"(?<![a-zäöüß])(?:hunde?|hundehaltung|haustiere\s+inkl\.?\s+hunde)\s+(?:sind\s+|ist\s+)?"
+                          r"(?:herzlich\s+)?(?:erlaubt|gestattet|willkommen)|hundefreundlich", re.I),
     "pets_ask": re.compile(r"(?:haus)?(?:tiere?|tierhaltung|hunde?)[^.\n]{0,25}?(?:nach|auf)\s+(?:absprache|anfrage|vereinbarung)|"
                            r"(?:nach|auf)\s+(?:absprache|anfrage)[^.\n]{0,25}?(?:haus)?tiere?", re.I),
     # Рієлтор приймає запити лише через форму / сайт
@@ -420,7 +428,9 @@ def evaluate(l: Listing) -> Verdict:
     m = RX["electric"].search(t)
     v.info["electric"] = quote_around(t, m) if m else ""
     kinds = [k for k, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info[key]]
-    if kinds and monthly is not None and monthly > config.TARGET_RENT:
+    if kinds and getattr(config, "REJECT_GAS_ELECTRIC", False):
+        v.reasons.append(" + ".join(kinds))
+    elif kinds and monthly is not None and monthly > config.TARGET_RENT:
         v.reasons.append(f"{' + '.join(kinds)} і дорожче {config.TARGET_RENT} €")
 
     # --- лише через форму на сайті
@@ -429,9 +439,13 @@ def evaluate(l: Listing) -> Verdict:
 
     # --- тварини: у вас собака
     m = RX["no_pets"].search(t)
+    small = RX["small_only"].search(t)
     if m:
         v.info["pets"] = ("no", quote_around(t, m))
         v.reasons.append(f"тварини заборонені: «{m.group(0)}»")
+    elif small and not RX["dogs_ok"].search(t):
+        v.info["pets"] = ("no", quote_around(t, small))
+        v.reasons.append(f"лише малі тварини: «{small.group(0)}»")
     elif (m := RX["pets_ok"].search(t)):
         v.info["pets"] = ("yes", quote_around(t, m))
     elif (m := RX["pets_ask"].search(t)):
