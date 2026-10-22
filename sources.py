@@ -149,6 +149,7 @@ def willhaben_details(l: Listing) -> Listing:
     l.area = parse_num(_first(a, "ESTATE_SIZE/LIVING_AREA")) or l.area
     l.rooms = parse_num(_first(a, "NO_OF_ROOMS")) or l.rooms
     l.deposit = parse_num(_first(a, "ADDITIONAL_COST/DEPOSIT"))
+    l.floor = str(_first(a, "FLOOR") or "")
     l.features = list(set(l.features + a.get("ESTATE_PREFERENCE", []) + a.get("FREE_AREA/FREE_AREA_TYPE", [])))
 
     # контакти

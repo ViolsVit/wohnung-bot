@@ -134,12 +134,17 @@ def format_message(l: Listing, v) -> str:
                 "reject": "❌ <b>Відсіяно</b>"}[v.status])
     out += [f'🏠 <a href="{e(l.url)}"><b>{e(l.title.strip()[:120])}</b></a>', ""]
 
-    # --- де + маршрут (посилання на Google Maps до центру)
+    # --- де + дорога (орієнтовно) з посиланнями на маршрут у Google Maps
     full = full_address(l)
     origin = f"{l.lat},{l.lon}" if l.lat and l.lon else quote_plus(full)
-    maps = ("https://www.google.com/maps/dir/?api=1&travelmode=transit"
-            f"&origin={origin}&destination={quote_plus(config.TRANSIT_DESTINATION)}")
-    out.append(f'📍 <b>{e(full)}</b> · <a href="{e(maps)}">🚆 маршрут</a>')
+
+    def route(dest):
+        return ("https://www.google.com/maps/dir/?api=1&travelmode=transit"
+                f"&origin={origin}&destination={quote_plus(dest)}")
+    hbf, vie = v.info.get("hbf"), v.info.get("vie")
+    out.append(f"📍 <b>{e(full)}</b>")
+    out.append(f'🚆 <a href="{e(route(config.STATION))}">Hbf ≈{hbf or "?"} хв</a> · '
+               f'✈️ <a href="{e(route(config.AIRPORT))}">VIE ≈{vie or "?"} хв</a>')
 
     # --- гроші
     rent, est = v.info.get("rent"), v.info.get("rent_estimated")
@@ -156,7 +161,11 @@ def format_message(l: Listing, v) -> str:
         detail = "лише Miete, BK ?"
     else:
         detail = ""
-    out.append(f"💶 <b>{eur(monthly)}</b>" + (f" = {e(detail)}" if detail else ""))
+    tag = {"premium": " · 💎 виняток до 1200 (сад + новобудова + паркінг)",
+           "suburb": " · 🏡 передмістя зі своїм садом"}.get(getattr(v, "tier", ""), "")
+    if v.dream:
+        tag = " · 🎯 ідеал"
+    out.append(f"💶 <b>{eur(monthly)}</b>" + (f" = {e(detail)}" if detail else "") + tag)
     abl = v.info.get("abloese")
     out.append(f"🔐 Kaution {eur(v.info.get('deposit'))} · 🛋 Ablöse "
                + ("keine" if abl == 0 else eur(abl) if abl else "—"))
@@ -256,7 +265,7 @@ def main():
     if not state["seen"]:
         tg_send("🏠 <b>Бот пошуку квартири запущено!</b>\nЗараз надішлю актуальні варіанти, "
                 "далі — лише нові оголошення.\n\n"
-                f"💚 — оренда до {config.TARGET_RENT} €\n✅ — підходить за всіма критеріями\n"
+                f"🎯 — до {config.TARGET_RENT} €\n✅ — підходить за всіма критеріями\n"
                 "⚠️ — підходить, але щось треба уточнити")
     items = collect(state, mode)
     new = [(k, l) for k, l in items if k not in state["seen"]]
@@ -295,7 +304,7 @@ def main():
             ready.append((l, v))
         polite_pause()
 
-    # 💚 спершу, потім ✅, потім ⚠️; всередині — дешевші вище
+    # ✅ спершу, потім ✅, потім ⚠️; всередині — дешевші вище
     order = {"ok": 0, "check": 1, "reject": 2}
     ready.sort(key=lambda x: (order[x[1].status], x[1].info.get("monthly") or 9999))
     for l, v in ready:

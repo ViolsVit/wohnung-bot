@@ -30,6 +30,7 @@ class Listing:
     area: Optional[float] = None
     rooms: Optional[float] = None
     year: Optional[int] = None
+    floor: str = ""             # поверх, якщо сайт дає окремим полем
     lat: Optional[float] = None
     lon: Optional[float] = None
     image: str = ""
@@ -49,7 +50,8 @@ class Verdict:
     warnings: list = field(default_factory=list)  # що перевірити вручну
     pluses: list = field(default_factory=list)    # ⭐ бонуси
     info: dict = field(default_factory=dict)
-    dream: bool = False          # 💚 оренда ≤ TARGET_RENT
+    dream: bool = False          # 🎯 оренда ≤ TARGET_RENT (лише Відень)
+    tier: str = ""               # wien | premium | suburb
 
 
 # ---------- допоміжні ----------
@@ -140,6 +142,18 @@ RX = {
     "garden": re.compile(r"(?<![a-zäöüß])(?:eigen|privat|haus|gemeinschafts)?garten(?:anteil|fläche|nutzung)?\b|\bgarden\b", re.I),
     "balcony": re.compile(r"(?<![a-zäöüß])balkon(?:e)?\b|\bbalcony\b", re.I),
     "loggia": re.compile(r"(?<![a-zäöüß])loggi(?:a|en)\b", re.I),
+    # свій сад: лише явні формулювання (а не «Blick in den Garten»)
+    "garden_private": re.compile(
+        r"eigengarten|privatgarten|mietergarten|gartenwohnung|gartenanteil|eigenem\s+garten|"
+        r"(?:eigene[mnrs]?|private[mnrs]?|exklusive[mnrs]?)\s+(?:\w+\s+)?garten\b|"
+        r"garten\s+(?:zur|in|mit)\s+(?:alleinige[nr]?|exklusive[nr]?|privater?|eigener?)\s+nutzung|"
+        r"private garden|own garden", re.I),
+    "garden_fake": re.compile(r"kunstrasen|künstliche[rnms]?\s+rasen|artificial (?:grass|turf)", re.I),
+    "ground_floor": re.compile(r"erdgescho(?:ss|ß)|\beg\b|gartenwohnung|parterre|ground floor", re.I),
+    "upper_floor": re.compile(
+        r"\b[1-9]\d?\.\s*(?:stock|og\b|obergescho|etage|liftstock)|obergescho(?:ss|ß)|dachgescho(?:ss|ß)|"
+        r"\bdg\b|penthouse|\bmansarde", re.I),
+    "no_parking": re.compile(r"(?:kein(?:e|en)?|ohne)\s+(?:\w+\s+)?(?:parkpl[aä]tz|stellpl[aä]tz|garage)", re.I),
     "shared": re.compile(r"gemeinschafts|allgemein|gemeinsam|für alle (?:bewohner|mieter)", re.I),
     "altbau": re.compile(r"\baltbau|stilaltbau|gründerzeit|jahrhundertwende|OLD_BUILDING", re.I),
     "neubau": re.compile(r"\bneubau|erstbezug(?!\s+nach)|neu errichtet|NEW_BUILDING", re.I),
@@ -329,12 +343,55 @@ def first_amount(rx, text, min_value=50):
     return None
 
 
+def is_vienna(postcode: str) -> bool:
+    return bool(postcode and re.fullmatch(r"1[0-2]\d0", postcode) and 1010 <= int(postcode) <= 1230)
+
+
 def location_ok(postcode: str) -> bool:
     if not postcode or postcode in getattr(config, "EXCLUDED_POSTCODES", ()):
         return False
-    if re.fullmatch(r"1[0-2]\d0", postcode) and 1010 <= int(postcode) <= 1230:
-        return True
-    return postcode in config.NOE_POSTCODES
+    return is_vienna(postcode) or postcode in config.NOE_POSTCODES
+
+
+def travel_minutes(postcode: str):
+    """(до вокзалу, до аеропорту) — орієнтовно, з config; (None, None), якщо невідомо."""
+    if postcode in config.VIENNA_TRAVEL:
+        return config.VIENNA_TRAVEL[postcode]
+    if postcode in config.SUBURBS:
+        return config.SUBURBS[postcode][1:]
+    return None, None
+
+
+def garden_info(l: Listing, t: str):
+    """«private» — явно свій сад; «maybe» — сад згаданий, але неясно чий; None — немає."""
+    feats = " ".join(l.features)
+    if RX["garden_private"].search(t):
+        return "private"
+    for m in RX["garden"].finditer(feats):
+        if not RX["shared"].search(m.group(0)):
+            return "private"                     # окреме поле сайту «Garten»
+    for m in RX["garden"].finditer(t):
+        before = re.split(r"[,.;:\n|]", t[max(0, m.start() - 30):m.start()])[-1]
+        if not (RX["shared"].search(m.group(0)) or RX["shared"].search(before)
+                or re.search(r"dach|blick|kinder|ausblick", before + m.group(0), re.I)):
+            return "maybe"
+    return None
+
+
+def floor_info(l: Listing, t: str):
+    """«ground» | «upper» | None"""
+    f = (l.floor or "").strip().lower()
+    if f:
+        if re.fullmatch(r"0|eg|erdgescho(ss|ß)|parterre|-?0(\.0)?", f):
+            return "ground"
+        if re.match(r"[1-9]", f) or "og" in f or "dg" in f:
+            return "upper"
+    g, u = RX["ground_floor"].search(t), RX["upper_floor"].search(t)
+    if g and not u:
+        return "ground"
+    if u and not g:
+        return "upper"
+    return None
 
 
 def fingerprint(l: Listing) -> str:
@@ -400,14 +457,24 @@ def evaluate(l: Listing) -> Verdict:
     v.info["rent"], v.info["rent_estimated"] = rent, estimated
     monthly = monthly_cost(l)
     v.info["monthly"] = monthly
+    suburb = not is_vienna(l.postcode)
+    v.tier = "suburb" if suburb else "wien"
+    limit = config.SUBURB_MAX_RENT if suburb else config.MAX_RENT
+    over = False          # дорожче за звичайну межу Відня → можливий лише преміум-виняток
     if monthly is not None:
-        if monthly > config.MAX_RENT:
-            net_basis = (l.rent_net or 0) + (l.bk or 0)
-            if estimated and net_basis <= config.MAX_RENT:
-                v.warnings.append(f"USt не вказана окремо: з податком ≈ {eur(monthly)}")
+        net_basis = (l.rent_net or 0) + (l.bk or 0)      # якщо USt лише оцінена — дивимось і на суму без неї
+        hard = limit if suburb else config.PREMIUM_MAX_RENT
+        usT_note = f"USt не вказана окремо: з податком ≈ {eur(monthly)}"
+        if monthly > hard and not (estimated and net_basis <= hard):
+            v.reasons.append(f"Miete + Betriebskosten {eur(monthly)} > {eur(hard)}")
+        elif monthly > limit:
+            if estimated and net_basis <= limit:
+                v.warnings.append(usT_note)
+            elif suburb:
+                v.warnings.append(usT_note)
             else:
-                v.reasons.append(f"Miete + Betriebskosten {eur(monthly)}")
-        elif monthly <= config.TARGET_RENT:
+                over = True
+        if not suburb and monthly <= config.TARGET_RENT:
             v.dream = True
         if rent is not None and not l.bk and not l.total_rent:
             v.warnings.append("Betriebskosten не вказані — сума буде вищою")
@@ -422,7 +489,7 @@ def evaluate(l: Listing) -> Verdict:
             v.info["energy"], v.info["energy_quote"] = kind, quote_around(t, m)
             break
 
-    # --- газове / електричне опалення: ❗❗❗, і відсіюємо, якщо дорожче за TARGET_RENT
+    # --- газове / електричне опалення: відсіюємо
     m = RX["gas"].search(t)
     v.info["gas"] = quote_around(t, m) if m and not RX["no_gas"].search(t) else ""
     m = RX["electric"].search(t)
@@ -430,8 +497,6 @@ def evaluate(l: Listing) -> Verdict:
     kinds = [k for k, key in (("Gasheizung", "gas"), ("Elektroheizung", "electric")) if v.info[key]]
     if kinds and getattr(config, "REJECT_GAS_ELECTRIC", False):
         v.reasons.append(" + ".join(kinds))
-    elif kinds and monthly is not None and monthly > config.TARGET_RENT:
-        v.reasons.append(f"{' + '.join(kinds)} і дорожче {config.TARGET_RENT} €")
 
     # --- лише через форму на сайті
     m = RX["form_only"].search(t)
@@ -564,6 +629,57 @@ def evaluate(l: Listing) -> Verdict:
             v.pluses.append(label)
         elif shared:
             v.pluses.append(label + " (allgemein)")
+
+    # --- сад / поверх / паркінг / дорога — для передмість і віденського винятку до 1200 €
+    garden = garden_info(l, t)
+    fake = RX["garden_fake"].search(t)
+    floor = floor_info(l, t)
+    parking = bool((RX["garage"].search(feats) or RX["parking"].search(feats)
+                    or RX["garage"].search(t) or RX["parking"].search(t)) and not RX["no_parking"].search(t))
+    hbf, vie = travel_minutes(l.postcode)
+    v.info.update(garden=garden, floor=floor, parking=parking, hbf=hbf, vie=vie)
+    if garden and "🌳 Garten" in v.pluses and garden == "private":
+        v.pluses[v.pluses.index("🌳 Garten")] = "🌳 свій сад"
+
+    def garden_problems(need_ground: bool) -> list:
+        p = []
+        if not garden:
+            p.append("немає свого саду")
+        elif fake:
+            p.append(f"штучний газон: «{fake.group(0)}»")
+        if need_ground and floor == "upper":
+            p.append("сад не на 0 поверсі")
+        return p
+
+    if suburb and location_ok(l.postcode):
+        probs = garden_problems(need_ground=True)
+        if probs:
+            v.reasons.append("передмістя: " + ", ".join(probs))
+        else:
+            if garden == "maybe":
+                v.warnings.append("сад: перевірити, чи він свій")
+            if floor is None:
+                v.warnings.append("поверх не вказаний (потрібен 0)")
+    elif over:
+        year_ok = v.info.get("year") == "новобудова" or (
+            isinstance(v.info.get("year"), int) and v.info["year"] >= config.PREMIUM_NEW_MIN_YEAR)
+        miss = garden_problems(need_ground=False)
+        if not year_ok:
+            miss.append(f"не новобудова (від {config.PREMIUM_NEW_MIN_YEAR})")
+        if not parking:
+            miss.append("без паркінгу")
+        if l.postcode not in config.PREMIUM_POSTCODES:
+            miss.append("район не зі списку")
+        if hbf is None or hbf > config.MAX_STATION_MINUTES:
+            miss.append(f"до вокзалу > {config.MAX_STATION_MINUTES} хв")
+        if vie is None or vie > config.MAX_AIRPORT_MINUTES:
+            miss.append(f"до аеропорту > {config.MAX_AIRPORT_MINUTES} хв")
+        if miss:
+            v.reasons.append(f"{eur(monthly)} > {eur(config.MAX_RENT)}, а для винятку бракує: " + ", ".join(miss))
+        else:
+            v.tier = "premium"
+            if garden == "maybe":
+                v.warnings.append("сад: перевірити, чи він свій")
 
     if v.reasons:
         v.status = "reject"
